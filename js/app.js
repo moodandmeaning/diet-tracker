@@ -10,8 +10,8 @@ function defaultState() {
     version: 1,
     active: 'p1',
     profiles: {
-      p1: { name: 'אביגיל', kind: 'f', setup: null, days: {}, weights: [] },
-      p2: { name: 'יוסף', kind: 'm', setup: null, days: {}, weights: [] },
+      p1: { name: 'אביגיל', kind: 'f', setup: null, days: {}, weights: [], measures: [] },
+      p2: { name: 'יוסף', kind: 'm', setup: null, days: {}, weights: [], measures: [] },
     },
     shopping: DEFAULT_SHOPPING.map((text, i) => ({ id: 'd' + i, text, done: false })),
     lastBackup: null,
@@ -27,6 +27,16 @@ function normalize(s) {
     p.kind = p.kind === 'm' ? 'm' : 'f';
     p.days = p.days && typeof p.days === 'object' ? p.days : {};
     p.weights = Array.isArray(p.weights) ? p.weights : [];
+    p.measures = Array.isArray(p.measures) ? p.measures : [];
+    // Older versions kept waist on the weight entry – move it to body measurements
+    for (const w of p.weights) {
+      if (w.waist) {
+        const same = p.measures.find((m) => m.date === w.date);
+        if (!same) p.measures.push({ date: w.date, waist: w.waist });
+        else if (!same.waist) same.waist = w.waist;
+        delete w.waist;
+      }
+    }
     p.setup = p.setup || null;
     if (p.water && typeof p.water !== 'object') delete p.water;
     s.profiles[id] = p;
@@ -191,6 +201,8 @@ let viewDate = todayKey();
 let weekOffset = 0;
 let menuSel = null;
 let chart = null;
+let measureChart = null;
+const WHR_TARGET = { f: 0.85, m: 0.9 };
 
 function show(name) {
   document.querySelectorAll('.screen').forEach((s) => { s.hidden = s.dataset.screen !== name; });
@@ -399,9 +411,9 @@ function renderWeight() {
   const bmi = cur / Math.pow(s.height / 100, 2);
   const bmiCat = bmi < 18.5 ? 'תת־משקל' : bmi < 25 ? 'תקין' : bmi < 30 ? 'עודף משקל' : 'השמנה';
   const toGoal = cur - s.goalWeight;
-  const waists = ws.filter((w) => w.waist);
-  const lastWaist = waists[waists.length - 1];
-  const waistDue = !lastWaist || daysBetween(lastWaist.date, today) >= 14;
+  const ms = [...(p.measures || [])].sort((a, b) => a.date.localeCompare(b.date));
+  const lastM = ms[ms.length - 1];
+  const measureDue = !lastM || daysBetween(lastM.date, today) >= 14;
 
   const milestones = [
     { label: 'ירידה של 5%', target: s.startWeight * 0.95 },
@@ -411,6 +423,9 @@ function renderWeight() {
     .sort((a, b) => b.target - a.target);
 
   let html = '';
+  if (measureDue) {
+    html += `<div class="note">📏 ${lastM ? `עברו ${daysBetween(lastM.date, today)} ימים מהמדידה האחרונה –` : 'עוד לא נרשמו מדידות גוף –'} הגיע הזמן למדוד מותניים וירכיים. <button class="btn ghost" data-act="go-measure" style="min-height:40px;margin-inline-start:6px">למדידה</button></div>`;
+  }
   if (parseKey(today).getDay() === s.weighDay && !p.weights.some((w) => w.date === today)) {
     html += `<div class="banner">⚖️ היום יום שקילה – בבוקר, אחרי שירותים ולפני אוכל.</div>`;
   }
@@ -422,7 +437,6 @@ function renderWeight() {
         <label class="field"><span>תאריך</span><input type="date" name="date" value="${today}" max="${today}" required></label>
         <label class="field"><span>משקל (ק״ג)</span><input type="number" name="kg" inputmode="decimal" step="0.1" min="30" max="300" required placeholder="0.0"></label>
       </div>
-      <label class="field"><span>היקף מותניים (ס״מ, לא חובה – פעם בשבועיים)</span><input type="number" name="waist" inputmode="decimal" step="0.5" min="40" max="200" placeholder="${waistDue ? 'הגיע הזמן למדוד 📏' : ''}"></label>
       <button class="btn block" type="submit" style="margin-top:14px">שמירה</button>
     </form>
   </div>
@@ -435,7 +449,7 @@ function renderWeight() {
       <div class="stat"><div class="v">${fmtKg(lostPct)}%</div><div class="k">מהמשקל ההתחלתי</div></div>
       <div class="stat"><div class="v">${fmtKg(bmi)}</div><div class="k">BMI · ${bmiCat}</div></div>
     </div>
-    <p class="muted" style="margin:10px 0 0">התחלה: ${fmtKg(s.startWeight)} ק״ג (${fmtDate(s.startDate)}) · יעד: ${fmtKg(s.goalWeight)} ק״ג${toGoal > 0 ? ` · נשארו ${fmtKg(toGoal)} ק״ג` : ''}${lastWaist ? ` · מותניים: ${fmtKg(lastWaist.waist)} ס״מ (${fmtDate(lastWaist.date)})` : ''}</p>
+    <p class="muted" style="margin:10px 0 0">התחלה: ${fmtKg(s.startWeight)} ק״ג (${fmtDate(s.startDate)}) · יעד: ${fmtKg(s.goalWeight)} ק״ג${toGoal > 0 ? ` · נשארו ${fmtKg(toGoal)} ק״ג` : ''}</p>
   </div>
 
   <div class="card">
@@ -454,11 +468,13 @@ function renderWeight() {
     </ul>
   </div>
 
+  ${measureCard(p, ms, today, measureDue)}
+
   <div class="card">
-    <h2>היסטוריה</h2>
+    <h2>היסטוריית שקילות</h2>
     ${ws.length ? `<ul class="log-list">${[...ws].reverse().map((w) => `
       <li><span class="grow">${fmtDate(w.date)}/${parseKey(w.date).getFullYear() % 100}</span>
-        <b>${fmtKg(w.kg)} ק״ג</b>${w.waist ? `<span class="muted small">· ${fmtKg(w.waist)} ס״מ</span>` : ''}
+        <b>${fmtKg(w.kg)} ק״ג</b>
         <button class="del" data-delw="${w.date}" aria-label="מחיקת שקילה">🗑️</button></li>`).join('')}</ul>`
       : '<p class="muted" style="margin:0">עדיין אין שקילות.</p>'}
   </div>
@@ -466,6 +482,101 @@ function renderWeight() {
 
   $('#screen-weight').innerHTML = html;
   drawChart(p);
+  drawMeasureChart(ms);
+}
+
+const fmtCm = (n) => `${n < 0 ? '−' : n > 0 ? '+' : ''}${fmtKg(Math.abs(n))} ס״מ`;
+
+function measureCard(p, ms, today, due) {
+  const change = (f) => {
+    const arr = ms.filter((m) => m[f]);
+    if (!arr.length) return { last: null };
+    const first = arr[0][f];
+    const last = arr[arr.length - 1][f];
+    return { last, diff: r1(last - first), single: arr.length === 1 };
+  };
+  const w = change('waist');
+  const h = change('hips');
+  const both = ms.filter((m) => m.waist && m.hips);
+  const lastBoth = both[both.length - 1];
+  const target = WHR_TARGET[p.kind];
+  const ratio = lastBoth ? lastBoth.waist / lastBoth.hips : null;
+  const changeText = (c) => (c.last == null ? '' : c.single ? 'מדידה ראשונה' : c.diff === 0 ? 'ללא שינוי' : `${fmtCm(c.diff)} מההתחלה`);
+  const changeCls = (c) => (c.diff < 0 ? 'down' : c.diff > 0 ? 'up' : '');
+  const lastDate = ms.length ? ms[ms.length - 1].date : null;
+
+  return `<div class="card" id="measureCard">
+    <h2>📏 מדידות גוף</h2>
+    <p class="muted small" style="margin:0 0 4px">פעם בשבועיים${lastDate ? ` · אחרונה: ${fmtDate(lastDate)}` : ''}${due ? ' · <b style="color:var(--warn-ink)">הגיע הזמן למדוד</b>' : ''}</p>
+    <form id="measureForm" autocomplete="off">
+      <label class="field"><span>תאריך</span><input type="date" name="date" value="${today}" max="${today}" required></label>
+      <div class="row">
+        <label class="field"><span>מותניים (ס״מ)</span><input type="number" name="waist" inputmode="decimal" step="0.5" min="40" max="200" placeholder="בגובה הטבור"></label>
+        <label class="field"><span>ירכיים/ישבן (ס״מ)</span><input type="number" name="hips" inputmode="decimal" step="0.5" min="50" max="220" placeholder="בנקודה הרחבה"></label>
+      </div>
+      <button class="btn block" type="submit" style="margin-top:14px">שמירת מדידה</button>
+    </form>
+    <details class="howto"><summary>איך מודדים?</summary>
+      <ul class="small">
+        <li>בבוקר, על בטן ריקה (אחרי שירותים, לפני אוכל ושתייה).</li>
+        <li>באותה נקודה בכל פעם: מותניים – בגובה הטבור; ירכיים – בנקודה הרחבה ביותר של הישבן.</li>
+        <li>סרט מדידה ישר ומקביל לרצפה, צמוד לעור בלי ללחוץ, בסוף נשיפה רגילה.</li>
+      </ul>
+    </details>
+    ${ms.length ? `
+    <div class="stats" style="margin-top:14px">
+      <div class="stat"><div class="v">${w.last != null ? fmtKg(w.last) : '–'}</div><div class="k">מותניים (ס״מ)</div><div class="chg ${changeCls(w)}">${changeText(w)}</div></div>
+      <div class="stat"><div class="v">${h.last != null ? fmtKg(h.last) : '–'}</div><div class="k">ירכיים (ס״מ)</div><div class="chg ${changeCls(h)}">${changeText(h)}</div></div>
+    </div>
+    <div class="whr ${ratio == null ? '' : ratio < target ? 'ok' : 'over'}">
+      <div><b>יחס מותניים־ירכיים</b><div class="muted small">יעד: מתחת ל־${target.toFixed(2)} (${p.kind === 'f' ? 'אישה' : 'גבר'})</div></div>
+      <div class="whr-v">${ratio == null ? '<span class="muted small">צריך מדידה של שניהם</span>' : `${ratio.toFixed(2)}${ratio < target ? ' ✓' : ''}`}</div>
+    </div>
+    ${ratio != null && ratio >= target ? `<p class="muted small" style="margin:6px 0 0">כדי להגיע ליעד: מותניים של פחות מ־${fmtKg(target * lastBoth.hips)} ס״מ (לפי הירכיים הנוכחיות).</p>` : ''}
+    ${ms.length > 1 ? '<div class="chart-wrap small-chart" style="margin-top:12px"><canvas id="measureChart" role="img" aria-label="גרף מותניים וירכיים"></canvas></div>' : ''}
+    <ul class="log-list" style="margin-top:8px">${[...ms].reverse().map((m) => `
+      <li><span class="grow">${fmtDate(m.date)}/${parseKey(m.date).getFullYear() % 100}</span>
+        <span class="small">${m.waist ? `מותניים <b>${fmtKg(m.waist)}</b>` : ''}${m.waist && m.hips ? ' · ' : ''}${m.hips ? `ירכיים <b>${fmtKg(m.hips)}</b>` : ''}</span>
+        <button class="del" data-delm="${m.date}" aria-label="מחיקת מדידה">🗑️</button></li>`).join('')}</ul>` : ''}
+  </div>`;
+}
+
+function drawMeasureChart(ms) {
+  if (measureChart) { measureChart.destroy(); measureChart = null; }
+  const canvas = $('#measureChart');
+  if (!canvas) return;
+  if (typeof Chart === 'undefined') { canvas.parentElement.innerHTML = '<p class="muted">הגרף ייטען כשיהיה חיבור לאינטרנט.</p>'; return; }
+  const start = ms[0].date;
+  const series = (f) => ms.filter((m) => m[f]).map((m) => ({ x: daysBetween(start, m.date), y: m[f] }));
+  const lastX = Math.max(daysBetween(start, ms[ms.length - 1].date), 1);
+  measureChart = new Chart(canvas, {
+    type: 'line',
+    data: {
+      datasets: [
+        { label: 'מותניים', data: series('waist'), borderColor: '#2e6b5e', backgroundColor: '#2e6b5e', borderWidth: 2.5, pointRadius: 3, tension: 0.2 },
+        { label: 'ירכיים', data: series('hips'), borderColor: '#c07a2c', backgroundColor: '#c07a2c', borderWidth: 2.5, pointRadius: 3, tension: 0.2 },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      plugins: {
+        legend: { rtl: true, labels: { boxWidth: 12, font: { size: 12 } } },
+        tooltip: {
+          rtl: true,
+          callbacks: {
+            title: (items) => fmtDate(addDays(start, Math.round(items[0].parsed.x))),
+            label: (it) => `${it.dataset.label}: ${fmtKg(it.parsed.y)} ס״מ`,
+          },
+        },
+      },
+      scales: {
+        x: { type: 'linear', min: 0, max: lastX, ticks: { callback: (v) => fmtDate(addDays(start, Math.round(v))), maxTicksLimit: 5, font: { size: 11 } }, grid: { color: '#eef2f0' } },
+        y: { ticks: { font: { size: 11 } }, grid: { color: '#eef2f0' } },
+      },
+    },
+  });
 }
 
 function drawChart(p) {
@@ -838,6 +949,14 @@ document.addEventListener('click', (e) => {
     save(); renderWeight();
     return;
   }
+  if (t.dataset.delm) {
+    if (!confirm('למחוק את המדידה?')) return;
+    const p = profile();
+    p.measures = p.measures.filter((m) => m.date !== t.dataset.delm);
+    save(); renderWeight();
+    $('#measureCard').scrollIntoView({ block: 'start' });
+    return;
+  }
   if (t.dataset.shopdel) {
     state.shopping = state.shopping.filter((i) => i.id !== t.dataset.shopdel);
     save(); renderShop();
@@ -849,6 +968,7 @@ document.addEventListener('click', (e) => {
     case 'next-day': viewDate = addDays(viewDate, 1); renderToday(); break;
     case 'goto-today': viewDate = todayKey(); renderToday(); break;
     case 'go-weight': go('weight'); break;
+    case 'go-measure': { const c = $('#measureCard'); if (c) c.scrollIntoView({ behavior: 'smooth', block: 'start' }); break; }
     case 'water-undo': undoWater(); renderToday(); break;
     case 'water-defaults':
       if (!confirm('להחזיר את יעדי השתייה לברירת המחדל?')) break;
@@ -915,17 +1035,38 @@ document.addEventListener('submit', (e) => {
     const f = new FormData(form);
     const date = f.get('date');
     const kg = num(f.get('kg'));
-    const waist = num(f.get('waist'));
     if (!date || !kg) { toast('נא למלא תאריך ומשקל'); return; }
     if (date > todayKey()) { toast('אי אפשר לשקול בעתיד 🙂'); return; }
     const p = profile();
     p.weights = p.weights.filter((w) => w.date !== date);
     const entry = { date, kg: r1(kg) };
-    if (waist) entry.waist = r1(waist);
     p.weights.push(entry);
     save();
     renderWeight();
     toast('השקילה נשמרה ✓');
+    return;
+  }
+  if (form.id === 'measureForm') {
+    const f = new FormData(form);
+    const date = f.get('date');
+    const waist = num(f.get('waist'));
+    const hips = num(f.get('hips'));
+    if (!date || (!waist && !hips)) { toast('נא למלא לפחות מדידה אחת'); return; }
+    if (date > todayKey()) { toast('אי אפשר למדוד בעתיד 🙂'); return; }
+    const p = profile();
+    p.measures = p.measures || [];
+    const prev = p.measures.find((m) => m.date === date) || {};
+    const entry = { date };
+    const wv = waist || prev.waist;
+    const hv = hips || prev.hips;
+    if (wv) entry.waist = r1(wv);
+    if (hv) entry.hips = r1(hv);
+    p.measures = p.measures.filter((m) => m.date !== date);
+    p.measures.push(entry);
+    save();
+    renderWeight();
+    $('#measureCard').scrollIntoView({ block: 'start' });
+    toast('המדידה נשמרה ✓');
     return;
   }
   if (form.id === 'shopAdd') {

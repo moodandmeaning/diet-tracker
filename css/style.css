@@ -260,3 +260,18 @@ body.setup-mode .tabbar, body.setup-mode .switcher { display: none; }
 .ww-day { font-size: .8rem; font-weight: 700; color: var(--muted); }
 .water-btns .btn[data-water] { flex-direction: column; gap: 0; line-height: 1.2; }
 .water-btns .btn[data-water] .small { font-weight: 400; opacity: .85; font-size: .78rem; }
+
+/* Body measurements */
+#measureCard { scroll-margin-top: 140px; }
+.howto { margin-top: 12px; }
+.howto summary { font-weight: 600; color: var(--accent); cursor: pointer; min-height: 32px; }
+.stat .chg { font-size: .82rem; font-weight: 600; color: var(--muted); }
+.stat .chg.down { color: var(--accent); }
+.stat .chg.up { color: var(--warn-ink); }
+.whr { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; padding: 12px; border-radius: 12px; background: var(--bg); border: 1px solid var(--line); }
+.whr.ok { background: var(--eat); border-color: #cfe3cb; }
+.whr.over { background: var(--warn-bg); border-color: #f5d9ad; }
+.whr-v { font-size: 1.5rem; font-weight: 800; white-space: nowrap; }
+.whr.ok .whr-v { color: var(--eat-ink); }
+.whr.over .whr-v { color: var(--warn-ink); }
+.small-chart { height: 190px; }
