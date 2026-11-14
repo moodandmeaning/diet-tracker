@@ -411,7 +411,7 @@ function renderWeight() {
   const bmi = cur / Math.pow(s.height / 100, 2);
   const bmiCat = bmi < 18.5 ? 'תת־משקל' : bmi < 25 ? 'תקין' : bmi < 30 ? 'עודף משקל' : 'השמנה';
   const toGoal = cur - s.goalWeight;
-  const ms = [...(p.measures || [])].sort((a, b) => a.date.localeCompare(b.date));
+  const ms = [...(p.measures || [])].filter((m) => m.waist || m.hips || (p.kind === 'f' && m.chest)).sort((a, b) => a.date.localeCompare(b.date));
   const lastM = ms[ms.length - 1];
   const measureDue = !lastM || daysBetween(lastM.date, today) >= 14;
 
@@ -482,7 +482,7 @@ function renderWeight() {
 
   $('#screen-weight').innerHTML = html;
   drawChart(p);
-  drawMeasureChart(ms);
+  drawMeasureChart(ms, p.kind === 'f');
 }
 
 const fmtCm = (n) => `${n < 0 ? '−' : n > 0 ? '+' : ''}${fmtKg(Math.abs(n))} ס״מ`;
@@ -497,6 +497,8 @@ function measureCard(p, ms, today, due) {
   };
   const w = change('waist');
   const h = change('hips');
+  const female = p.kind === 'f';
+  const c = change('chest');
   const both = ms.filter((m) => m.waist && m.hips);
   const lastBoth = both[both.length - 1];
   const target = WHR_TARGET[p.kind];
@@ -514,6 +516,7 @@ function measureCard(p, ms, today, due) {
         <label class="field"><span>מותניים (ס״מ)</span><input type="number" name="waist" inputmode="decimal" step="0.5" min="40" max="200" placeholder="בגובה הטבור"></label>
         <label class="field"><span>ירכיים/ישבן (ס״מ)</span><input type="number" name="hips" inputmode="decimal" step="0.5" min="50" max="220" placeholder="בנקודה הרחבה"></label>
       </div>
+      ${female ? '<label class="field"><span>חזה (ס״מ)</span><input type="number" name="chest" inputmode="decimal" step="0.5" min="50" max="200" placeholder="בנקודה המלאה ביותר"></label>' : ''}
       <button class="btn block" type="submit" style="margin-top:14px">שמירת מדידה</button>
     </form>
     <details class="howto"><summary>איך מודדים?</summary>
@@ -521,12 +524,14 @@ function measureCard(p, ms, today, due) {
         <li>בבוקר, על בטן ריקה (אחרי שירותים, לפני אוכל ושתייה).</li>
         <li>באותה נקודה בכל פעם: מותניים – בגובה הטבור; ירכיים – בנקודה הרחבה ביותר של הישבן.</li>
         <li>סרט מדידה ישר ומקביל לרצפה, צמוד לעור בלי ללחוץ, בסוף נשיפה רגילה.</li>
+        ${female ? '<li>חזה – בנקודה המלאה ביותר: בלי חזייה או עם אותה חזייה בכל פעם, בעמידה זקופה, הסרט ישר ולא הדוק. המידה יכולה להשתנות מעט במהלך המחזור – לכן כדאי למדוד באותו שלב במחזור, ולא להיבהל משינוי קטן.</li>' : ''}
       </ul>
     </details>
     ${ms.length ? `
     <div class="stats" style="margin-top:14px">
       <div class="stat"><div class="v">${w.last != null ? fmtKg(w.last) : '–'}</div><div class="k">מותניים (ס״מ)</div><div class="chg ${changeCls(w)}">${changeText(w)}</div></div>
       <div class="stat"><div class="v">${h.last != null ? fmtKg(h.last) : '–'}</div><div class="k">ירכיים (ס״מ)</div><div class="chg ${changeCls(h)}">${changeText(h)}</div></div>
+      ${female ? `<div class="stat"><div class="v">${c.last != null ? fmtKg(c.last) : '–'}</div><div class="k">חזה (ס״מ)</div><div class="chg ${changeCls(c)}">${changeText(c)}</div></div>` : ''}
     </div>
     <div class="whr ${ratio == null ? '' : ratio < target ? 'ok' : 'over'}">
       <div><b>יחס מותניים־ירכיים</b><div class="muted small">יעד: מתחת ל־${target.toFixed(2)} (${p.kind === 'f' ? 'אישה' : 'גבר'})</div></div>
@@ -534,14 +539,14 @@ function measureCard(p, ms, today, due) {
     </div>
     ${ratio != null && ratio >= target ? `<p class="muted small" style="margin:6px 0 0">כדי להגיע ליעד: מותניים של פחות מ־${fmtKg(target * lastBoth.hips)} ס״מ (לפי הירכיים הנוכחיות).</p>` : ''}
     ${ms.length > 1 ? '<div class="chart-wrap small-chart" style="margin-top:12px"><canvas id="measureChart" role="img" aria-label="גרף מותניים וירכיים"></canvas></div>' : ''}
-    <ul class="log-list" style="margin-top:8px">${[...ms].reverse().map((m) => `
+    <ul class="log-list" style="margin-top:8px">${[...ms].reverse().filter((m) => m.waist || m.hips || (female && m.chest)).map((m) => `
       <li><span class="grow">${fmtDate(m.date)}/${parseKey(m.date).getFullYear() % 100}</span>
-        <span class="small">${m.waist ? `מותניים <b>${fmtKg(m.waist)}</b>` : ''}${m.waist && m.hips ? ' · ' : ''}${m.hips ? `ירכיים <b>${fmtKg(m.hips)}</b>` : ''}</span>
+        <span class="small">${m.waist ? `מותניים <b>${fmtKg(m.waist)}</b>` : ''}${m.waist && m.hips ? ' · ' : ''}${m.hips ? `ירכיים <b>${fmtKg(m.hips)}</b>` : ''}${female && m.chest ? `${m.waist || m.hips ? ' · ' : ''}חזה <b>${fmtKg(m.chest)}</b>` : ''}</span>
         <button class="del" data-delm="${m.date}" aria-label="מחיקת מדידה">🗑️</button></li>`).join('')}</ul>` : ''}
   </div>`;
 }
 
-function drawMeasureChart(ms) {
+function drawMeasureChart(ms, female) {
   if (measureChart) { measureChart.destroy(); measureChart = null; }
   const canvas = $('#measureChart');
   if (!canvas) return;
@@ -555,6 +560,7 @@ function drawMeasureChart(ms) {
       datasets: [
         { label: 'מותניים', data: series('waist'), borderColor: '#2e6b5e', backgroundColor: '#2e6b5e', borderWidth: 2.5, pointRadius: 3, tension: 0.2 },
         { label: 'ירכיים', data: series('hips'), borderColor: '#c07a2c', backgroundColor: '#c07a2c', borderWidth: 2.5, pointRadius: 3, tension: 0.2 },
+        ...(female && ms.some((m) => m.chest) ? [{ label: 'חזה', data: series('chest'), borderColor: '#8a5a9e', backgroundColor: '#8a5a9e', borderWidth: 2.5, pointRadius: 3, tension: 0.2 }] : []),
       ],
     },
     options: {
@@ -1051,7 +1057,8 @@ document.addEventListener('submit', (e) => {
     const date = f.get('date');
     const waist = num(f.get('waist'));
     const hips = num(f.get('hips'));
-    if (!date || (!waist && !hips)) { toast('נא למלא לפחות מדידה אחת'); return; }
+    const chest = num(f.get('chest'));
+    if (!date || (!waist && !hips && !chest)) { toast('נא למלא לפחות מדידה אחת'); return; }
     if (date > todayKey()) { toast('אי אפשר למדוד בעתיד 🙂'); return; }
     const p = profile();
     p.measures = p.measures || [];
@@ -1061,6 +1068,8 @@ document.addEventListener('submit', (e) => {
     const hv = hips || prev.hips;
     if (wv) entry.waist = r1(wv);
     if (hv) entry.hips = r1(hv);
+    const cv = chest || prev.chest;
+    if (cv) entry.chest = r1(cv);
     p.measures = p.measures.filter((m) => m.date !== date);
     p.measures.push(entry);
     save();
