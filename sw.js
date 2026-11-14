@@ -1,5 +1,5 @@
 // Offline support: app shell + Chart.js are precached; same-origin files are refreshed in the background.
-const CACHE = 'hamaslul-v4';
+const CACHE = 'hamaslul-v5';
 const CHART_URL = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js';
 const SHELL = [
   './', 'index.html', 'css/style.css', 'js/data.js', 'js/app.js', 'manifest.webmanifest',

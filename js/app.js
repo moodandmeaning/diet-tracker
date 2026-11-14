@@ -3,6 +3,7 @@
 /* ============ Storage ============ */
 // All data lives only in this device's localStorage. Nothing personal is in the code.
 const STORE_KEY = 'hamaslul-v1';
+const APP_VERSION = 5;
 const PROFILE_IDS = ['p1', 'p2'];
 
 function defaultState() {
@@ -538,7 +539,13 @@ function measureCard(p, ms, today, due) {
       <div class="whr-v">${ratio == null ? '<span class="muted small">צריך מדידה של שניהם</span>' : `${ratio.toFixed(2)}${ratio < target ? ' ✓' : ''}`}</div>
     </div>
     ${ratio != null && ratio >= target ? `<p class="muted small" style="margin:6px 0 0">כדי להגיע ליעד: מותניים של פחות מ־${fmtKg(target * lastBoth.hips)} ס״מ (לפי הירכיים הנוכחיות).</p>` : ''}
-    ${ms.length > 1 ? '<div class="chart-wrap small-chart" style="margin-top:12px"><canvas id="measureChart" role="img" aria-label="גרף מותניים וירכיים"></canvas></div>' : ''}
+    ${ms.length > 1 ? '<div class="chart-wrap small-chart" style="margin-top:12px"><canvas id="measureChart" role="img" aria-label="גרף מדידות גוף"></canvas></div>' : ''}
+    ${(() => {
+      const names = [['waist', 'מותניים'], ['hips', 'ירכיים'], ...(female ? [['chest', 'חזה']] : [])];
+      const lone = names.filter(([f]) => ms.filter((m) => m[f]).length === 1).map(([, n]) => n);
+      if (!lone.length) return '';
+      return `<p class="muted small" style="margin:6px 0 0">${ms.length > 1 ? 'נקודה בודדת בגרף' : 'הגרף יופיע'} – הקו של ${lone.join(', ')} יופיע אחרי המדידה השנייה.</p>`;
+    })()}
     <ul class="log-list" style="margin-top:8px">${[...ms].reverse().filter((m) => m.waist || m.hips || (female && m.chest)).map((m) => `
       <li><span class="grow">${fmtDate(m.date)}/${parseKey(m.date).getFullYear() % 100}</span>
         <span class="small">${m.waist ? `מותניים <b>${fmtKg(m.waist)}</b>` : ''}${m.waist && m.hips ? ' · ' : ''}${m.hips ? `ירכיים <b>${fmtKg(m.hips)}</b>` : ''}${female && m.chest ? `${m.waist || m.hips ? ' · ' : ''}חזה <b>${fmtKg(m.chest)}</b>` : ''}</span>
@@ -554,13 +561,17 @@ function drawMeasureChart(ms, female) {
   const start = ms[0].date;
   const series = (f) => ms.filter((m) => m[f]).map((m) => ({ x: daysBetween(start, m.date), y: m[f] }));
   const lastX = Math.max(daysBetween(start, ms[ms.length - 1].date), 1);
+  const ds = (label, f, color) => {
+    const data = series(f);
+    return { label, data, borderColor: color, backgroundColor: color, borderWidth: 2.5, pointRadius: data.length === 1 ? 6 : 3, tension: 0.2 };
+  };
   measureChart = new Chart(canvas, {
     type: 'line',
     data: {
       datasets: [
-        { label: 'מותניים', data: series('waist'), borderColor: '#2e6b5e', backgroundColor: '#2e6b5e', borderWidth: 2.5, pointRadius: 3, tension: 0.2 },
-        { label: 'ירכיים', data: series('hips'), borderColor: '#c07a2c', backgroundColor: '#c07a2c', borderWidth: 2.5, pointRadius: 3, tension: 0.2 },
-        ...(female && ms.some((m) => m.chest) ? [{ label: 'חזה', data: series('chest'), borderColor: '#8a5a9e', backgroundColor: '#8a5a9e', borderWidth: 2.5, pointRadius: 3, tension: 0.2 }] : []),
+        ds('מותניים', 'waist', '#2e6b5e'),
+        ds('ירכיים', 'hips', '#c07a2c'),
+        ...(female && ms.some((m) => m.chest) ? [ds('חזה', 'chest', '#8a5a9e')] : []),
       ],
     },
     options: {
@@ -854,7 +865,7 @@ function renderSettings() {
     <button class="btn danger block" data-act="wipe">מחיקת כל הנתונים מהמכשיר</button>
   </div>
   <button class="btn ghost block" data-act="close-settings">חזרה</button>
-  <p class="muted small" style="text-align:center">המסלול שלנו · הנתונים לא יוצאים מהמכשיר</p>`;
+  <p class="muted small" style="text-align:center">המסלול שלנו · גרסה ${APP_VERSION} · הנתונים לא יוצאים מהמכשיר</p>`;
 }
 
 /* ============ Backup / restore ============ */
@@ -1124,5 +1135,19 @@ render();
 
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    // A new version took over: reload once so the screen shows it (not on the very first install)
+    if (!hadController || reloading) return;
+    reloading = true;
+    location.reload();
+  });
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') reg.update().catch(() => {});
+      });
+    }).catch(() => {});
+  });
 }
