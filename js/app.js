@@ -1,0 +1,847 @@
+'use strict';
+
+/* ============ Storage ============ */
+// All data lives only in this device's localStorage. Nothing personal is in the code.
+const STORE_KEY = 'hamaslul-v1';
+const PROFILE_IDS = ['p1', 'p2'];
+
+function defaultState() {
+  return {
+    version: 1,
+    active: 'p1',
+    profiles: {
+      p1: { name: 'אביגיל', kind: 'f', setup: null, days: {}, weights: [] },
+      p2: { name: 'יוסף', kind: 'm', setup: null, days: {}, weights: [] },
+    },
+    shopping: DEFAULT_SHOPPING.map((text, i) => ({ id: 'd' + i, text, done: false })),
+    lastBackup: null,
+  };
+}
+
+function normalize(s) {
+  const d = defaultState();
+  if (!s || typeof s !== 'object' || !s.profiles) return d;
+  for (const id of PROFILE_IDS) {
+    const p = s.profiles[id] || d.profiles[id];
+    p.name = p.name || d.profiles[id].name;
+    p.kind = p.kind === 'm' ? 'm' : 'f';
+    p.days = p.days && typeof p.days === 'object' ? p.days : {};
+    p.weights = Array.isArray(p.weights) ? p.weights : [];
+    p.setup = p.setup || null;
+    s.profiles[id] = p;
+  }
+  if (!PROFILE_IDS.includes(s.active)) s.active = 'p1';
+  if (!Array.isArray(s.shopping)) s.shopping = d.shopping;
+  s.version = 1;
+  return s;
+}
+
+function load() {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    return normalize(raw ? JSON.parse(raw) : null);
+  } catch (e) {
+    return defaultState();
+  }
+}
+
+let state = load();
+
+function save() {
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify(state));
+  } catch (e) {
+    toast('שגיאה בשמירה – כדאי לעשות גיבוי');
+  }
+}
+
+/* ============ Helpers ============ */
+const $ = (sel, root = document) => root.querySelector(sel);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const pad = (n) => String(n).padStart(2, '0');
+const keyOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const parseKey = (k) => { const [y, m, d] = k.split('-').map(Number); return new Date(y, m - 1, d); };
+const todayKey = () => keyOf(new Date());
+const addDays = (k, n) => { const d = parseKey(k); d.setDate(d.getDate() + n); return keyOf(d); };
+const daysBetween = (a, b) => Math.round((parseKey(b) - parseKey(a)) / 86400000);
+const fmtDate = (k) => { const d = parseKey(k); return `${d.getDate()}/${d.getMonth() + 1}`; };
+const fmtDateLong = (k) => { const d = parseKey(k); return `יום ${WEEKDAYS[d.getDay()]}, ${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`; };
+const num = (v) => { const n = parseFloat(String(v).replace(',', '.')); return Number.isFinite(n) ? n : null; };
+const r1 = (n) => Math.round(n * 10 + 1e-9) / 10;
+const fmtKg = (n) => r1(n).toLocaleString('he-IL', { maximumFractionDigits: 1 });
+const fmtInt = (n) => Math.round(n).toLocaleString('he-IL');
+
+const profile = () => state.profiles[state.active];
+const isFastDay = (p, k) => p.setup.fastDays.includes(parseKey(k).getDay());
+const dayData = (p, k) => p.days[k] || {};
+
+function setDay(k, patch) {
+  const p = profile();
+  const cur = { ...dayData(p, k), ...patch };
+  for (const f of Object.keys(cur)) if (cur[f] === false || cur[f] === null || cur[f] === '') delete cur[f];
+  if (Object.keys(cur).length) p.days[k] = cur; else delete p.days[k];
+  save();
+}
+
+function sortedWeights(p) {
+  return [...p.weights].sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function currentWeight(p) {
+  const w = sortedWeights(p);
+  return w.length ? w[w.length - 1].kg : p.setup.startWeight;
+}
+
+function calorieText(p, k) {
+  const s = p.setup;
+  const shabbat = parseKey(k).getDay() === 6;
+  if (shabbat && s.calShabbat) return `עד ${fmtInt(s.calShabbat)} קק״ל (שבת)`;
+  return `${fmtInt(s.calMin)}–${fmtInt(s.calMax)} קק״ל`;
+}
+
+let toastTimer;
+function toast(msg) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+}
+
+function safetyBox(open) {
+  return `<details class="card safety"${open ? ' open' : ''}>
+    <summary>⚠️ מתי לעצור</summary>
+    <p class="small" style="margin:8px 0 4px">להפסיק את הצום, או להחליף את ימי הצום ל־500 קק״ל, אם מופיעים:</p>
+    <ul class="small">${SAFETY.map((s) => `<li>${esc(s)}</li>`).join('')}</ul>
+    <p class="small" style="margin:6px 0 0">ובמקרה כזה – להתייעץ עם רופא/ה.</p>
+  </details>`;
+}
+
+/* ============ Navigation ============ */
+let tab = 'today';
+let overlay = null;          // 'setup' | 'settings' | null
+let setupFor = null;         // profile id being edited
+let viewDate = todayKey();
+let weekOffset = 0;
+let menuSel = null;
+let chart = null;
+
+function show(name) {
+  document.querySelectorAll('.screen').forEach((s) => { s.hidden = s.dataset.screen !== name; });
+}
+
+function render() {
+  renderSwitcher();
+  const p = profile();
+  document.body.classList.toggle('setup-mode', overlay === 'setup' || !p.setup);
+  document.querySelectorAll('#tabbar button').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab && !overlay));
+
+  if (overlay === 'settings') { show('settings'); renderSettings(); return; }
+  if (overlay === 'setup' || !p.setup) { show('setup'); renderSetup(overlay === 'setup' ? setupFor : state.active); return; }
+
+  show(tab);
+  ({ today: renderToday, week: renderWeek, weight: renderWeight, menus: renderMenus, swaps: renderSwaps, shop: renderShop })[tab]();
+}
+
+function go(t) {
+  tab = t;
+  overlay = null;
+  render();
+  window.scrollTo(0, 0);
+}
+
+function renderSwitcher() {
+  const el = $('#switcher');
+  el.innerHTML = PROFILE_IDS.map((id) => `<button role="tab" data-pid="${id}" class="${id === state.active ? 'active' : ''}" aria-selected="${id === state.active}">${esc(state.profiles[id].name)}</button>`).join('');
+  // First-run setup of the very first profile: hide the switcher until something is set up
+  const anySetup = PROFILE_IDS.some((id) => state.profiles[id].setup);
+  el.style.display = (overlay === 'settings' || (overlay === 'setup' && setupFor)) ? 'none' : (anySetup ? '' : 'none');
+}
+
+/* ============ Screen: Today ============ */
+function renderToday() {
+  const p = profile();
+  const k = viewDate;
+  const isToday = k === todayKey();
+  const fast = isFastDay(p, k);
+  const d = dayData(p, k);
+  const wd = parseKey(k).getDay();
+  const tomorrowFast = isFastDay(p, addDays(k, 1));
+  const yesterdayFast = isFastDay(p, addDays(k, -1));
+
+  let html = `
+  <div class="date-nav">
+    <button data-act="prev-day" aria-label="יום קודם">→</button>
+    <div class="date-label">${isToday ? 'היום · ' : ''}${fmtDateLong(k)}
+      ${isToday ? '' : '<br><button class="btn ghost today-link" data-act="goto-today" style="min-height:36px;margin-top:4px">חזרה להיום</button>'}
+    </div>
+    <button data-act="next-day" aria-label="יום הבא">←</button>
+  </div>
+  <div class="day-banner ${fast ? 'fast' : 'eat'}">
+    <div class="big">${fast ? '💧 יום צום' : '🍽️ יום אכילה'}</div>
+    <div class="sub">${fast ? 'מים, תה וקפה שחור' : esc(calorieText(p, k))}</div>
+  </div>`;
+
+  if (isToday && wd === p.setup.weighDay && !p.weights.some((w) => w.date === k)) {
+    html += `<div class="banner">⚖️ היום יום שקילה! <button class="btn" data-act="go-weight" style="min-height:40px;margin-inline-start:8px">לשקילה</button></div>`;
+  }
+
+  html += `<div class="card">
+    <h2>צ׳קליסט יומי</h2>
+    ${checkRow('adherence', fast ? 'עמדתי בצום' : 'עמדתי בתפריט', d.adherence)}
+    ${checkRow('water', 'שתיתי מספיק', d.water)}
+    <div class="check-row">
+      <span class="label">👣 צעדים</span>
+      <input class="steps-input" type="number" inputmode="numeric" min="0" step="100" placeholder="0" value="${d.steps ?? ''}" data-steps aria-label="מספר צעדים">
+    </div>
+    ${checkRow('strength', 'אימון כוח', d.strength)}
+  </div>`;
+
+  if (fast) {
+    html += `<div class="card tips"><h2>טיפים ליום צום</h2><ul>${FAST_TIPS.map((t) => `<li>${esc(t)}</li>`).join('')}</ul></div>`;
+  } else {
+    const menuId = MENU_BY_WEEKDAY[wd];
+    const menu = MENUS.find((m) => m.id === menuId);
+    html += `<div class="card">
+      <h2>התפריט להיום</h2>
+      <p style="margin:0">${menu ? `<b>${esc(menu.title)}</b>${menu.note ? ` <span class="pill">${esc(menu.note)}</span>` : ''}` : 'תפריט א׳ או ב׳ – לבחירה'}</p>
+      <p class="muted" style="margin:4px 0 0">יעד: ${esc(calorieText(p, k))}</p>
+      <div class="btn-row"><button class="btn ghost" data-act="go-menu" data-menu="${menuId || 'A'}">לתפריט המלא</button></div>
+    </div>`;
+  }
+  if (!fast && yesterdayFast) html += `<div class="note">🥚 אחרי יום צום: שוברים את הצום בחלבון + ירקות, לא בפחמימות.</div>`;
+  if (!fast && tomorrowFast) html += `<div class="note">🌙 מחר צום: הארוחה האחרונה – עשירה בחלבון ובסיבים, בלי מתוקים.</div>`;
+
+  html += safetyBox(false);
+
+  const hasData = PROFILE_IDS.some((id) => Object.keys(state.profiles[id].days).length || state.profiles[id].weights.length);
+  const backupAge = state.lastBackup ? daysBetween(state.lastBackup.slice(0, 10), todayKey()) : Infinity;
+  if (isToday && hasData && backupAge >= 14) {
+    html += `<div class="note">💾 ${state.lastBackup ? `הגיבוי האחרון לפני ${backupAge} ימים.` : 'עדיין לא נעשה גיבוי.'} <button class="btn ghost" data-act="backup" style="min-height:40px;margin-inline-start:6px">גיבוי עכשיו</button></div>`;
+  }
+
+  $('#screen-today').innerHTML = html;
+}
+
+function checkRow(field, label, on) {
+  return `<div class="check-row">
+    <span class="label">${esc(label)}</span>
+    <button class="tick ${on ? 'on' : ''}" data-check="${field}" aria-pressed="${!!on}" aria-label="${esc(label)}">${on ? '✓' : ''}</button>
+  </div>`;
+}
+
+/* ============ Screen: Week ============ */
+function weekStart(offset) {
+  const d = new Date();
+  d.setDate(d.getDate() - d.getDay() + offset * 7);
+  return keyOf(d);
+}
+
+function renderWeek() {
+  const p = profile();
+  const start = weekStart(weekOffset);
+  const today = todayKey();
+  const keys = Array.from({ length: 7 }, (_, i) => addDays(start, i));
+  const past = keys.filter((k) => k <= today);
+  const done = past.filter((k) => dayData(p, k).adherence).length;
+  const pct = past.length ? Math.round((done / past.length) * 100) : 0;
+  const fastDone = past.filter((k) => isFastDay(p, k) && dayData(p, k).adherence).length;
+  const fastAll = past.filter((k) => isFastDay(p, k)).length;
+  const water = past.filter((k) => dayData(p, k).water).length;
+  const strength = keys.filter((k) => dayData(p, k).strength).length;
+  const stepsDays = keys.map((k) => dayData(p, k).steps).filter((s) => s > 0);
+  const stepsAvg = stepsDays.length ? stepsDays.reduce((a, b) => a + b, 0) / stepsDays.length : 0;
+
+  const label = weekOffset === 0 ? 'השבוע' : weekOffset === -1 ? 'שבוע שעבר' : `${fmtDate(keys[0])}–${fmtDate(keys[6])}`;
+
+  $('#screen-week').innerHTML = `
+  <div class="date-nav">
+    <button data-act="prev-week" aria-label="שבוע קודם">→</button>
+    <div class="date-label">${label}<div class="muted small">${fmtDate(keys[0])} – ${fmtDate(keys[6])}</div></div>
+    <button data-act="next-week" aria-label="שבוע הבא" ${weekOffset >= 0 ? 'disabled style="opacity:.35"' : ''}>←</button>
+  </div>
+  <div class="card">
+    <div class="week-grid">
+      ${keys.map((k) => {
+        const fast = isFastDay(p, k);
+        const dd = dayData(p, k);
+        const future = k > today;
+        const mark = dd.adherence ? '✅' : (future || k === today ? '' : '–');
+        return `<button class="wday ${fast ? 'fast' : 'eat'} ${k === today ? 'today' : ''} ${future ? 'future' : ''}" data-day="${k}" aria-label="${fmtDateLong(k)}">
+          <span class="wd">${WEEKDAYS_SHORT[parseKey(k).getDay()]}</span>
+          <span class="dn">${fmtDate(k)}</span>
+          <span class="kind">${fast ? 'צום' : 'אכילה'}</span>
+          <span class="mark">${mark}</span>
+        </button>`;
+      }).join('')}
+    </div>
+    <div class="legend" style="margin-top:10px">
+      <span><i style="background:var(--fast)"></i>צום</span>
+      <span><i style="background:var(--eat)"></i>אכילה</span>
+      <span>✅ עמדתי ביעד</span>
+      <span class="muted">לחיצה על יום – למילוי</span>
+    </div>
+  </div>
+  <div class="card">
+    <h2>הצלחה שבועית</h2>
+    <div class="pct">${pct}%</div>
+    <div class="bar"><div style="width:${pct}%"></div></div>
+    <p class="muted" style="margin:6px 0 0">${done} מתוך ${past.length} ימים עד כה${fastAll ? ` · צומות: ${fastDone}/${fastAll}` : ''}</p>
+    <div class="stats" style="margin-top:12px">
+      <div class="stat"><div class="v">${water}/${past.length}</div><div class="k">ימים עם מספיק שתייה</div></div>
+      <div class="stat"><div class="v">${strength}</div><div class="k">אימוני כוח</div></div>
+      <div class="stat"><div class="v">${stepsAvg ? fmtInt(stepsAvg) : '–'}</div><div class="k">ממוצע צעדים ליום</div></div>
+      <div class="stat"><div class="v">${fastAll}</div><div class="k">ימי צום עד כה</div></div>
+    </div>
+  </div>`;
+}
+
+/* ============ Screen: Weight ============ */
+function renderWeight() {
+  const p = profile();
+  const s = p.setup;
+  const today = todayKey();
+  const ws = sortedWeights(p);
+  const cur = currentWeight(p);
+  const lost = r1(s.startWeight - cur);
+  const lostPct = (lost / s.startWeight) * 100;
+  const bmi = cur / Math.pow(s.height / 100, 2);
+  const bmiCat = bmi < 18.5 ? 'תת־משקל' : bmi < 25 ? 'תקין' : bmi < 30 ? 'עודף משקל' : 'השמנה';
+  const toGoal = cur - s.goalWeight;
+  const waists = ws.filter((w) => w.waist);
+  const lastWaist = waists[waists.length - 1];
+  const waistDue = !lastWaist || daysBetween(lastWaist.date, today) >= 14;
+
+  const milestones = [
+    { label: 'ירידה של 5%', target: s.startWeight * 0.95 },
+    { label: 'ירידה של 10%', target: s.startWeight * 0.9 },
+    { label: '🎯 משקל היעד', target: s.goalWeight },
+  ].filter((m, i, arr) => i === arr.length - 1 || m.target > s.goalWeight)
+    .sort((a, b) => b.target - a.target);
+
+  let html = '';
+  if (parseKey(today).getDay() === s.weighDay && !p.weights.some((w) => w.date === today)) {
+    html += `<div class="banner">⚖️ היום יום שקילה – בבוקר, אחרי שירותים ולפני אוכל.</div>`;
+  }
+
+  html += `<div class="card">
+    <h2>רישום שקילה</h2>
+    <form id="weightForm" autocomplete="off">
+      <div class="row">
+        <label class="field"><span>תאריך</span><input type="date" name="date" value="${today}" max="${today}" required></label>
+        <label class="field"><span>משקל (ק״ג)</span><input type="number" name="kg" inputmode="decimal" step="0.1" min="30" max="300" required placeholder="0.0"></label>
+      </div>
+      <label class="field"><span>היקף מותניים (ס״מ, לא חובה – פעם בשבועיים)</span><input type="number" name="waist" inputmode="decimal" step="0.5" min="40" max="200" placeholder="${waistDue ? 'הגיע הזמן למדוד 📏' : ''}"></label>
+      <button class="btn block" type="submit" style="margin-top:14px">שמירה</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>התקדמות</h2>
+    <div class="stats">
+      <div class="stat"><div class="v">${fmtKg(cur)}</div><div class="k">משקל נוכחי (ק״ג)</div></div>
+      <div class="stat"><div class="v">${lost >= 0 ? '' : '+'}${fmtKg(Math.abs(lost))}</div><div class="k">${lost >= 0 ? 'ירדו עד כה (ק״ג)' : 'עלייה מההתחלה (ק״ג)'}</div></div>
+      <div class="stat"><div class="v">${fmtKg(lostPct)}%</div><div class="k">מהמשקל ההתחלתי</div></div>
+      <div class="stat"><div class="v">${fmtKg(bmi)}</div><div class="k">BMI · ${bmiCat}</div></div>
+    </div>
+    <p class="muted" style="margin:10px 0 0">התחלה: ${fmtKg(s.startWeight)} ק״ג (${fmtDate(s.startDate)}) · יעד: ${fmtKg(s.goalWeight)} ק״ג${toGoal > 0 ? ` · נשארו ${fmtKg(toGoal)} ק״ג` : ''}${lastWaist ? ` · מותניים: ${fmtKg(lastWaist.waist)} ס״מ (${fmtDate(lastWaist.date)})` : ''}</p>
+  </div>
+
+  <div class="card">
+    <h2>גרף משקל</h2>
+    <div class="chart-wrap"><canvas id="weightChart" aria-label="גרף משקל לאורך זמן" role="img"></canvas></div>
+    <p class="muted small" style="margin:8px 0 0">הקו המקווקו: קצב צפוי של ק״ג לשבוע מהמשקל ההתחלתי.</p>
+  </div>
+
+  <div class="card">
+    <h2>אבני דרך</h2>
+    <ul class="milestones">
+      ${milestones.map((m) => {
+        const ok = cur <= m.target + 0.001;
+        return `<li><span>${m.label} · ${fmtKg(m.target)} ק״ג</span><span class="${ok ? 'done' : 'muted'}">${ok ? '✓ הושג!' : `עוד ${fmtKg(cur - m.target)} ק״ג`}</span></li>`;
+      }).join('')}
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>היסטוריה</h2>
+    ${ws.length ? `<ul class="log-list">${[...ws].reverse().map((w) => `
+      <li><span class="grow">${fmtDate(w.date)}/${parseKey(w.date).getFullYear() % 100}</span>
+        <b>${fmtKg(w.kg)} ק״ג</b>${w.waist ? `<span class="muted small">· ${fmtKg(w.waist)} ס״מ</span>` : ''}
+        <button class="del" data-delw="${w.date}" aria-label="מחיקת שקילה">🗑️</button></li>`).join('')}</ul>`
+      : '<p class="muted" style="margin:0">עדיין אין שקילות.</p>'}
+  </div>
+  ${safetyBox(false)}`;
+
+  $('#screen-weight').innerHTML = html;
+  drawChart(p);
+}
+
+function drawChart(p) {
+  if (chart) { chart.destroy(); chart = null; }
+  const canvas = $('#weightChart');
+  if (!canvas) return;
+  if (typeof Chart === 'undefined') {
+    canvas.parentElement.innerHTML = '<p class="muted">הגרף ייטען כשיהיה חיבור לאינטרנט.</p>';
+    return;
+  }
+  const s = p.setup;
+  const ws = sortedWeights(p);
+  const pts = [{ x: 0, y: s.startWeight }, ...ws.map((w) => ({ x: daysBetween(s.startDate, w.date), y: w.kg }))]
+    .sort((a, b) => a.x - b.x);
+  const lastX = Math.max(daysBetween(s.startDate, todayKey()), pts[pts.length - 1].x, 14);
+  const goalX = Math.max(0, (s.startWeight - s.goalWeight) * 7);
+  const pace = [{ x: 0, y: s.startWeight }];
+  if (goalX < lastX) pace.push({ x: goalX, y: s.goalWeight }, { x: lastX, y: s.goalWeight });
+  else pace.push({ x: lastX, y: s.startWeight - lastX / 7 });
+
+  const allY = [...pts.map((q) => q.y), ...pace.map((q) => q.y), s.goalWeight];
+  const minY = Math.floor(Math.min(...allY) - 1);
+  const maxY = Math.ceil(Math.max(...allY) + 1);
+
+  chart = new Chart(canvas, {
+    type: 'line',
+    data: {
+      datasets: [
+        { label: 'משקל', data: pts, borderColor: '#2e6b5e', backgroundColor: '#2e6b5e', borderWidth: 3, pointRadius: 4, tension: 0.2 },
+        { label: 'קצב צפוי (1 ק״ג/שבוע)', data: pace, borderColor: '#9aa8a4', borderDash: [6, 6], borderWidth: 2, pointRadius: 0, tension: 0 },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      plugins: {
+        legend: { rtl: true, labels: { boxWidth: 14, font: { size: 12 } } },
+        tooltip: {
+          rtl: true,
+          callbacks: {
+            title: (items) => fmtDate(addDays(s.startDate, Math.round(items[0].parsed.x))),
+            label: (it) => `${it.dataset.label}: ${fmtKg(it.parsed.y)} ק״ג`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          type: 'linear', min: Math.min(0, pts[0].x), max: lastX,
+          ticks: { callback: (v) => fmtDate(addDays(s.startDate, Math.round(v))), maxTicksLimit: 6, font: { size: 11 } },
+          grid: { color: '#eef2f0' },
+        },
+        y: { min: minY, max: maxY, ticks: { font: { size: 11 } }, grid: { color: '#eef2f0' } },
+      },
+    },
+  });
+}
+
+/* ============ Screen: Menus ============ */
+function renderMenus() {
+  const p = profile();
+  if (!menuSel) {
+    const wd = new Date().getDay();
+    menuSel = MENU_BY_WEEKDAY[wd] || 'A';
+  }
+  const m = MENUS.find((x) => x.id === menuSel);
+  const other = p.kind === 'f' ? 'm' : 'f';
+  const otherLabel = other === 'm' ? 'לגבר' : 'לאישה';
+
+  $('#screen-menus').innerHTML = `
+  <div class="seg" role="tablist">${MENUS.map((x) => `<button data-menu-sel="${x.id}" class="${x.id === menuSel ? 'active' : ''}">${esc(x.title)}</button>`).join('')}</div>
+  <div class="card">
+    <h2>${esc(m.title)}${m.day !== m.title ? ` <span class="muted small">· ${esc(m.day)}</span>` : ''}</h2>
+    <p style="margin:0 0 6px"><span class="pill">מנות ל${esc(p.name)} · כ־${p.kind === 'f' ? '1,800' : '2,200–2,400'} קק״ל</span>${m.note ? ` <span class="pill">${esc(m.note)}</span>` : ''}</p>
+    ${m.meals.map((meal) => {
+      const mine = meal[p.kind] || meal.f;
+      const theirs = meal[other] || meal.f;
+      return `<div class="meal"><div class="mn">${esc(meal.name)}</div><div>${esc(mine)}</div>${theirs !== mine ? `<div class="other">${otherLabel}: ${esc(theirs)}</div>` : ''}</div>`;
+    }).join('')}
+  </div>
+  <div class="card">
+    <h2>כללים</h2>
+    <ul>${MENU_RULES.map((r) => `<li>${esc(r)}</li>`).join('')}</ul>
+  </div>`;
+}
+
+/* ============ Screen: Swaps & lists ============ */
+function renderSwaps() {
+  const tags = (arr, cls = '') => `<div class="tags ${cls}">${arr.map((t) => `<span>${esc(t)}</span>`).join('')}</div>`;
+  $('#screen-swaps').innerHTML = `
+  <div class="card">
+    <h2>🔄 החלפות שוות ערך</h2>
+    ${SWAPS.map((g) => `<h3>${esc(g.title)}</h3><div class="swap">${g.items.map((i) => `<span class="s">${esc(i)}</span>`).join('<span class="eq">=</span>')}</div>`).join('')}
+  </div>
+  <div class="card">
+    <h2>🥦 ירקות</h2>
+    <h3>בלי הגבלה (בלי שמן)</h3>
+    ${tags(VEG_FREE)}
+    <h3>נספרים כפחמימה</h3>
+    ${tags(VEG_CARB, 'carb')}
+    <h3>נספרים כשומן</h3>
+    ${tags(VEG_FAT, 'fat')}
+    <ul style="margin-top:12px">${VEG_NOTES.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>
+  </div>
+  <div class="card">
+    <h2>🍎 פירות</h2>
+    <p style="margin:0">${esc(FRUIT.intro)}</p>
+    <h3>${esc(FRUIT.light.title)}</h3>${tags(FRUIT.light.items)}
+    <h3>${esc(FRUIT.smaller.title)}</h3>${tags(FRUIT.smaller.items, 'carb')}
+    <h3>${esc(FRUIT.little.title)}</h3>${tags(FRUIT.little.items, 'fat')}
+  </div>`;
+}
+
+/* ============ Screen: Shopping ============ */
+function renderShop() {
+  const items = state.shopping;
+  const left = items.filter((i) => !i.done).length;
+  $('#screen-shop').innerHTML = `
+  <div class="card">
+    <h2>🛒 רשימת קניות שבועית <span class="muted small">· משותפת</span></h2>
+    <p class="muted" style="margin:0 0 8px">${left ? `נשארו ${left} מתוך ${items.length}` : items.length ? 'הכול נקנה! 🎉' : 'הרשימה ריקה'}</p>
+    <form class="add-row" id="shopAdd" autocomplete="off">
+      <input type="text" name="text" placeholder="הוספת פריט…" aria-label="פריט חדש" maxlength="80">
+      <button class="btn" type="submit">הוספה</button>
+    </form>
+    <div style="margin-top:8px">
+      ${items.map((i) => `<div class="shop-item ${i.done ? 'checked' : ''}">
+        <label><input type="checkbox" data-shop="${esc(i.id)}" ${i.done ? 'checked' : ''}><span class="t">${esc(i.text)}</span></label>
+        <button class="del" data-shopdel="${esc(i.id)}" aria-label="הסרת ${esc(i.text)}">✕</button>
+      </div>`).join('')}
+    </div>
+    <div class="btn-row">
+      <button class="btn ghost" data-act="shop-reset">🔁 שבוע חדש (ניקוי סימונים)</button>
+      <button class="btn ghost" data-act="shop-default">שחזור רשימה מקורית</button>
+    </div>
+  </div>`;
+}
+
+/* ============ Setup ============ */
+let setupDraft = null;
+
+function renderSetup(pid) {
+  const p = state.profiles[pid];
+  const editing = !!p.setup;
+  if (!setupDraft || setupDraft.pid !== pid) {
+    setupDraft = { pid, kind: p.kind, fastDays: p.setup ? [...p.setup.fastDays] : [0, 2, 4], weighDay: p.setup ? p.setup.weighDay : 1 };
+  }
+  const s = p.setup || {};
+  const ph = setupDraft.kind === 'm' ? { min: 2200, max: 2400, shab: 2500 } : { min: 1800, max: 1900, shab: 2000 };
+  const anySetup = PROFILE_IDS.some((id) => state.profiles[id].setup);
+  const v = (x) => (x ?? '');
+
+  $('#screen-setup').innerHTML = `
+  ${!anySetup ? `<div class="card" style="background:var(--accent-soft)">
+    <h2>ברוכים הבאים 🌿</h2>
+    <p style="margin:0">מעקב צום לסירוגין ומשקל לשניים. הנתונים נשמרים רק במכשיר הזה.</p>
+    <p class="small" style="margin:8px 0 0">כבר יש לכם קובץ גיבוי? <button class="btn ghost" data-act="restore" style="min-height:40px">שחזור מגיבוי</button></p>
+  </div>` : ''}
+  <form class="card" id="setupForm" autocomplete="off">
+    <h2>${editing ? 'עריכת הגדרות' : 'הגדרה ראשונית'} – ${esc(p.name)}</h2>
+    <label class="field"><span>שם</span><input type="text" name="name" value="${esc(p.name)}" maxlength="20" required></label>
+    <div class="field"><span style="display:block;font-weight:600;margin:12px 0 4px">גודל מנות בתפריט</span>
+      <div class="seg">
+        <button type="button" data-kind="f" class="${setupDraft.kind === 'f' ? 'active' : ''}">אישה</button>
+        <button type="button" data-kind="m" class="${setupDraft.kind === 'm' ? 'active' : ''}">גבר</button>
+      </div>
+    </div>
+    <div class="row">
+      <label class="field"><span>משקל התחלתי (ק״ג)</span><input type="number" name="startWeight" inputmode="decimal" step="0.1" min="30" max="300" required value="${v(s.startWeight)}"></label>
+      <label class="field"><span>גובה (ס״מ)</span><input type="number" name="height" inputmode="numeric" step="1" min="120" max="230" required value="${v(s.height)}"></label>
+    </div>
+    <div class="row">
+      <label class="field"><span>משקל יעד (ק״ג)</span><input type="number" name="goalWeight" inputmode="decimal" step="0.1" min="30" max="300" required value="${v(s.goalWeight)}"></label>
+      <label class="field"><span>תאריך התחלה</span><input type="date" name="startDate" required value="${v(s.startDate) || todayKey()}"></label>
+    </div>
+    <h3>קלוריות בימי אכילה</h3>
+    <div class="row">
+      <label class="field"><span>מ־</span><input type="number" name="calMin" inputmode="numeric" step="50" min="800" max="5000" placeholder="${ph.min}" value="${v(s.calMin)}"></label>
+      <label class="field"><span>עד</span><input type="number" name="calMax" inputmode="numeric" step="50" min="800" max="5000" placeholder="${ph.max}" value="${v(s.calMax)}"></label>
+      <label class="field"><span>שבת עד</span><input type="number" name="calShabbat" inputmode="numeric" step="50" min="800" max="5000" placeholder="${ph.shab}" value="${v(s.calShabbat)}"></label>
+    </div>
+    <p class="muted small" style="margin:4px 0 0">שדה ריק = הערך המוצע שמופיע באפור.</p>
+    <h3>ימי צום</h3>
+    <div class="chips">${WEEKDAYS_SHORT.map((d, i) => `<button type="button" class="chip ${setupDraft.fastDays.includes(i) ? 'on' : ''}" data-fastday="${i}" aria-pressed="${setupDraft.fastDays.includes(i)}">${d}</button>`).join('')}</div>
+    <p class="muted small" style="margin:4px 0 0">מסומן = צום. ברירת מחדל: א׳, ג׳, ה׳.</p>
+    <h3>יום שקילה</h3>
+    <div class="chips">${WEEKDAYS_SHORT.map((d, i) => `<button type="button" class="chip weigh ${setupDraft.weighDay === i ? 'on' : ''}" data-weighday="${i}" aria-pressed="${setupDraft.weighDay === i}">${d}</button>`).join('')}</div>
+    <button class="btn block" type="submit" style="margin-top:18px">שמירה</button>
+    ${overlay === 'setup' ? '<button class="btn ghost block" type="button" data-act="setup-cancel" style="margin-top:8px">ביטול</button>' : ''}
+  </form>`;
+}
+
+function submitSetup(form) {
+  const pid = setupDraft.pid;
+  const p = state.profiles[pid];
+  const f = new FormData(form);
+  const ph = setupDraft.kind === 'm' ? { min: 2200, max: 2400, shab: 2500 } : { min: 1800, max: 1900, shab: 2000 };
+  const sw = num(f.get('startWeight')), h = num(f.get('height')), g = num(f.get('goalWeight'));
+  if (!sw || !h || !g) { toast('נא למלא משקל, גובה ויעד'); return; }
+  if (g >= sw) { toast('משקל היעד צריך להיות נמוך מהמשקל ההתחלתי'); return; }
+  if (!setupDraft.fastDays.length) { toast('נא לבחור לפחות יום צום אחד'); return; }
+  let calMin = num(f.get('calMin')) || ph.min;
+  let calMax = num(f.get('calMax')) || ph.max;
+  if (calMin > calMax) [calMin, calMax] = [calMax, calMin];
+  p.name = String(f.get('name') || '').trim().slice(0, 20) || p.name;
+  p.kind = setupDraft.kind;
+  p.setup = {
+    startWeight: sw, height: h, goalWeight: g,
+    startDate: f.get('startDate') || todayKey(),
+    calMin, calMax, calShabbat: num(f.get('calShabbat')) || ph.shab,
+    fastDays: [...setupDraft.fastDays].sort(), weighDay: setupDraft.weighDay,
+  };
+  save();
+  setupDraft = null;
+  const wasOverlay = overlay;
+  overlay = null;
+  setupFor = null;
+  toast('נשמר ✓');
+  if (!wasOverlay) {
+    state.active = pid;
+    const otherId = PROFILE_IDS.find((id) => !state.profiles[id].setup);
+    if (otherId) toast(`נשמר ✓ אפשר להגדיר גם את ${state.profiles[otherId].name} מהבורר למעלה`);
+  }
+  tab = 'today';
+  render();
+  window.scrollTo(0, 0);
+}
+
+/* ============ Settings ============ */
+function renderSettings() {
+  $('#screen-settings').innerHTML = `
+  <div class="card">
+    <h2>⚙️ הגדרות</h2>
+    <h3>שמות</h3>
+    <form id="namesForm" autocomplete="off">
+      <div class="row">
+        ${PROFILE_IDS.map((id) => `<label class="field" style="margin-top:0"><span class="muted small">פרופיל ${id === 'p1' ? '1' : '2'}</span><input type="text" name="${id}" value="${esc(state.profiles[id].name)}" maxlength="20" required></label>`).join('')}
+      </div>
+      <button class="btn ghost block" type="submit" style="margin-top:10px">שמירת שמות</button>
+    </form>
+    <h3>הגדרות אישיות</h3>
+    <div class="btn-row">${PROFILE_IDS.map((id) => `<button class="btn ghost" data-editsetup="${id}">${state.profiles[id].setup ? 'עריכה' : 'הגדרה'} – ${esc(state.profiles[id].name)}</button>`).join('')}</div>
+  </div>
+  <div class="card">
+    <h2>💾 גיבוי ושחזור</h2>
+    <p class="muted" style="margin:0">הנתונים נשמרים רק בטלפון הזה, ועלולים להימחק (ניקוי דפדפן, החלפת מכשיר). כדאי לגבות פעם בשבועיים ולשמור את הקובץ בדרייב/וואטסאפ.</p>
+    <p class="small" style="margin:8px 0 0">גיבוי אחרון: <b>${state.lastBackup ? fmtDate(state.lastBackup.slice(0, 10)) + '/' + state.lastBackup.slice(0, 4) : 'אף פעם'}</b></p>
+    <div class="btn-row">
+      <button class="btn" data-act="backup">⬇️ גיבוי</button>
+      <button class="btn ghost" data-act="restore">⬆️ שחזור</button>
+    </div>
+  </div>
+  <div class="card">
+    <h2>מחיקה</h2>
+    <button class="btn danger block" data-act="wipe">מחיקת כל הנתונים מהמכשיר</button>
+  </div>
+  <button class="btn ghost block" data-act="close-settings">חזרה</button>
+  <p class="muted small" style="text-align:center">המסלול שלנו · הנתונים לא יוצאים מהמכשיר</p>`;
+}
+
+/* ============ Backup / restore ============ */
+async function backup() {
+  const stamp = new Date().toISOString();
+  const payload = JSON.stringify({ app: 'hamaslul', version: 1, exportedAt: stamp, data: { ...state, lastBackup: stamp } }, null, 2);
+  const name = `hamaslul-backup-${todayKey()}.json`;
+  const blob = new Blob([payload], { type: 'application/json' });
+  let ok = false;
+  try {
+    const file = new File([blob], name, { type: 'application/json' });
+    if (/Android|iPhone|iPad|iPod/i.test(navigator.userAgent) && navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: 'גיבוי – המסלול שלנו' });
+      ok = true;
+    }
+  } catch (e) {
+    if (e && e.name === 'AbortError') return;
+  }
+  if (!ok) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  }
+  state.lastBackup = stamp;
+  save();
+  toast('הגיבוי נשמר ✓');
+  render();
+}
+
+function restore() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/json,.json';
+  input.onchange = async () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    try {
+      const obj = JSON.parse(await file.text());
+      const data = obj && obj.app === 'hamaslul' ? obj.data : obj;
+      if (!data || !data.profiles || !PROFILE_IDS.some((id) => data.profiles[id])) throw new Error('bad');
+      if (!confirm('השחזור יחליף את כל הנתונים במכשיר הזה. להמשיך?')) return;
+      state = normalize(data);
+      save();
+      overlay = null; setupDraft = null; tab = 'today'; viewDate = todayKey();
+      render();
+      toast('הנתונים שוחזרו ✓');
+    } catch (e) {
+      toast('הקובץ לא תקין');
+    }
+  };
+  input.click();
+}
+
+/* ============ Events ============ */
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('button, [data-day]');
+  if (!t) return;
+
+  if (t.dataset.tab) { go(t.dataset.tab); return; }
+  if (t.dataset.pid) {
+    if (t.dataset.pid !== state.active) {
+      state.active = t.dataset.pid; save();
+      if (overlay === 'setup' && !setupFor) setupDraft = null;
+      render();
+    }
+    return;
+  }
+  if (t.dataset.check) {
+    const cur = dayData(profile(), viewDate)[t.dataset.check];
+    setDay(viewDate, { [t.dataset.check]: !cur });
+    renderToday();
+    return;
+  }
+  if (t.dataset.day) { viewDate = t.dataset.day; go('today'); return; }
+  if (t.dataset.menuSel) { menuSel = t.dataset.menuSel; renderMenus(); return; }
+  if (t.dataset.kind) { setupDraft.kind = t.dataset.kind; rerenderSetupKeepingInputs(); return; }
+  if (t.dataset.fastday !== undefined) {
+    const d = +t.dataset.fastday;
+    setupDraft.fastDays = setupDraft.fastDays.includes(d) ? setupDraft.fastDays.filter((x) => x !== d) : [...setupDraft.fastDays, d];
+    rerenderSetupKeepingInputs();
+    return;
+  }
+  if (t.dataset.weighday !== undefined) { setupDraft.weighDay = +t.dataset.weighday; rerenderSetupKeepingInputs(); return; }
+  if (t.dataset.editsetup) { overlay = 'setup'; setupFor = t.dataset.editsetup; setupDraft = null; render(); window.scrollTo(0, 0); return; }
+  if (t.dataset.delw) {
+    if (!confirm('למחוק את השקילה?')) return;
+    const p = profile();
+    p.weights = p.weights.filter((w) => w.date !== t.dataset.delw);
+    save(); renderWeight();
+    return;
+  }
+  if (t.dataset.shopdel) {
+    state.shopping = state.shopping.filter((i) => i.id !== t.dataset.shopdel);
+    save(); renderShop();
+    return;
+  }
+
+  switch (t.dataset.act) {
+    case 'prev-day': viewDate = addDays(viewDate, -1); renderToday(); break;
+    case 'next-day': viewDate = addDays(viewDate, 1); renderToday(); break;
+    case 'goto-today': viewDate = todayKey(); renderToday(); break;
+    case 'go-weight': go('weight'); break;
+    case 'go-menu': menuSel = t.dataset.menu; go('menus'); break;
+    case 'prev-week': weekOffset--; renderWeek(); break;
+    case 'next-week': if (weekOffset < 0) { weekOffset++; renderWeek(); } break;
+    case 'shop-reset':
+      state.shopping.forEach((i) => { i.done = false; });
+      save(); renderShop(); toast('הסימונים נוקו – שבוע חדש');
+      break;
+    case 'shop-default':
+      if (!confirm('להחזיר את הרשימה המקורית? פריטים שהוספתם יימחקו.')) break;
+      state.shopping = defaultState().shopping; save(); renderShop();
+      break;
+    case 'backup': backup(); break;
+    case 'restore': restore(); break;
+    case 'close-settings': overlay = null; render(); break;
+    case 'setup-cancel': overlay = null; setupFor = null; setupDraft = null; overlay = 'settings'; render(); break;
+    case 'wipe':
+      if (!confirm('למחוק את כל הנתונים של שני הפרופילים? כדאי לגבות קודם.')) break;
+      if (!confirm('בטוח? אי אפשר לבטל.')) break;
+      state = defaultState(); save(); overlay = null; setupDraft = null; tab = 'today'; render();
+      break;
+  }
+});
+
+$('#settingsBtn').addEventListener('click', () => {
+  overlay = overlay === 'settings' ? null : 'settings';
+  setupDraft = null;
+  render();
+  window.scrollTo(0, 0);
+});
+
+function rerenderSetupKeepingInputs() {
+  const form = $('#setupForm');
+  const vals = form ? Object.fromEntries(new FormData(form)) : {};
+  renderSetup(setupDraft.pid);
+  const nf = $('#setupForm');
+  for (const [k, v] of Object.entries(vals)) if (nf.elements[k]) nf.elements[k].value = v;
+}
+
+document.addEventListener('input', (e) => {
+  if (e.target.matches('[data-steps]')) {
+    const n = parseInt(e.target.value, 10);
+    setDay(viewDate, { steps: Number.isFinite(n) && n > 0 ? n : null });
+  }
+});
+
+document.addEventListener('change', (e) => {
+  if (e.target.matches('[data-shop]')) {
+    const item = state.shopping.find((i) => i.id === e.target.dataset.shop);
+    if (item) { item.done = e.target.checked; save(); renderShop(); }
+  }
+});
+
+document.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const form = e.target;
+  if (form.id === 'setupForm') { submitSetup(form); return; }
+  if (form.id === 'weightForm') {
+    const f = new FormData(form);
+    const date = f.get('date');
+    const kg = num(f.get('kg'));
+    const waist = num(f.get('waist'));
+    if (!date || !kg) { toast('נא למלא תאריך ומשקל'); return; }
+    if (date > todayKey()) { toast('אי אפשר לשקול בעתיד 🙂'); return; }
+    const p = profile();
+    p.weights = p.weights.filter((w) => w.date !== date);
+    const entry = { date, kg: r1(kg) };
+    if (waist) entry.waist = r1(waist);
+    p.weights.push(entry);
+    save();
+    renderWeight();
+    toast('השקילה נשמרה ✓');
+    return;
+  }
+  if (form.id === 'shopAdd') {
+    const text = String(new FormData(form).get('text') || '').trim();
+    if (!text) return;
+    state.shopping.push({ id: 'u' + Date.now().toString(36), text: text.slice(0, 80), done: false });
+    save(); renderShop();
+    $('#shopAdd input').focus();
+    return;
+  }
+  if (form.id === 'namesForm') {
+    const f = new FormData(form);
+    for (const id of PROFILE_IDS) {
+      const n = String(f.get(id) || '').trim().slice(0, 20);
+      if (n) state.profiles[id].name = n;
+    }
+    save(); render(); toast('השמות עודכנו ✓');
+  }
+});
+
+// Re-render when the day changes while the app stays open (e.g. resumed next morning)
+let lastSeenDay = todayKey();
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && todayKey() !== lastSeenDay) {
+    if (viewDate === lastSeenDay) viewDate = todayKey();
+    lastSeenDay = todayKey();
+    render();
+  }
+});
+
+/* ============ Boot ============ */
+render();
+
+if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+}

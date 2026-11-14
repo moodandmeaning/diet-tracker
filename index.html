@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>המסלול שלנו</title>
+  <meta name="description" content="מעקב צום לסירוגין ומשקל">
+  <meta name="theme-color" content="#2e6b5e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="המסלול שלנו">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-row">
+      <h1>המסלול שלנו</h1>
+      <button class="icon-btn" id="settingsBtn" aria-label="הגדרות">⚙️</button>
+    </div>
+    <div class="switcher" id="switcher" role="tablist" aria-label="בחירת פרופיל"></div>
+  </header>
+
+  <main id="main">
+    <section class="screen" id="screen-today" data-screen="today"></section>
+    <section class="screen" id="screen-week" data-screen="week" hidden></section>
+    <section class="screen" id="screen-weight" data-screen="weight" hidden></section>
+    <section class="screen" id="screen-menus" data-screen="menus" hidden></section>
+    <section class="screen" id="screen-swaps" data-screen="swaps" hidden></section>
+    <section class="screen" id="screen-shop" data-screen="shop" hidden></section>
+    <section class="screen" id="screen-setup" data-screen="setup" hidden></section>
+    <section class="screen" id="screen-settings" data-screen="settings" hidden></section>
+  </main>
+
+  <nav class="tabbar" id="tabbar" aria-label="ניווט">
+    <button data-tab="today" class="active"><span class="ti">☀️</span><span>היום</span></button>
+    <button data-tab="week"><span class="ti">📅</span><span>שבוע</span></button>
+    <button data-tab="weight"><span class="ti">⚖️</span><span>משקל</span></button>
+    <button data-tab="menus"><span class="ti">🍽️</span><span>תפריטים</span></button>
+    <button data-tab="swaps"><span class="ti">🔄</span><span>החלפות</span></button>
+    <button data-tab="shop"><span class="ti">🛒</span><span>קניות</span></button>
+  </nav>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+  <script src="js/data.js" defer></script>
+  <script src="js/app.js" defer></script>
+</body>
+</html>
