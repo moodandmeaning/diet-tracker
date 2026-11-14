@@ -28,6 +28,7 @@ function normalize(s) {
     p.days = p.days && typeof p.days === 'object' ? p.days : {};
     p.weights = Array.isArray(p.weights) ? p.weights : [];
     p.setup = p.setup || null;
+    if (p.water && typeof p.water !== 'object') delete p.water;
     s.profiles[id] = p;
   }
   if (!PROFILE_IDS.includes(s.active)) s.active = 'p1';
@@ -78,9 +79,74 @@ const dayData = (p, k) => p.days[k] || {};
 function setDay(k, patch) {
   const p = profile();
   const cur = { ...dayData(p, k), ...patch };
-  for (const f of Object.keys(cur)) if (cur[f] === false || cur[f] === null || cur[f] === '') delete cur[f];
+  for (const f of Object.keys(cur)) if (cur[f] === false || cur[f] === null || cur[f] === '' || cur[f] === 0 || (Array.isArray(cur[f]) && !cur[f].length)) delete cur[f];
   if (Object.keys(cur).length) p.days[k] = cur; else delete p.days[k];
   save();
+}
+
+// Daily water target in liters, per profile and day type (editable in settings)
+const DEFAULT_WATER = {
+  f: { fastMin: 2.5, fastMax: 3, eatMin: 2, eatMax: 2.5 },
+  m: { fastMin: 3, fastMax: 3.5, eatMin: 2.5, eatMax: 3 },
+};
+function waterTargets(p) {
+  return { ...DEFAULT_WATER[p.kind], ...(p.water || {}) };
+}
+function waterTarget(p, k) {
+  const t = waterTargets(p);
+  return isFastDay(p, k) ? { min: t.fastMin, max: t.fastMax } : { min: t.eatMin, max: t.eatMax };
+}
+const fmtL = (ml) => (Math.round(ml / 50) / 20).toLocaleString('he-IL', { maximumFractionDigits: 2 });
+
+function addWater(ml) {
+  const p = profile();
+  const d = dayData(p, viewDate);
+  const total = Math.max(0, (d.waterMl || 0) + ml);
+  const log = [...(d.waterLog || []), ml];
+  setDay(viewDate, { waterMl: total, waterLog: log, water: total >= waterTarget(p, viewDate).min * 1000 });
+}
+function undoWater() {
+  const p = profile();
+  const d = dayData(p, viewDate);
+  const log = [...(d.waterLog || [])];
+  if (!log.length) { toast('אין מה לבטל'); return; }
+  const total = Math.max(0, (d.waterMl || 0) - log.pop());
+  setDay(viewDate, { waterMl: total, waterLog: log, water: total >= waterTarget(p, viewDate).min * 1000 });
+}
+
+function waterCard(p, k, d, fast) {
+  const ml = d.waterMl || 0;
+  const t = waterTarget(p, k);
+  const pct = Math.min(100, (ml / (t.max * 1000)) * 100);
+  const minPct = (t.min / t.max) * 100;
+  const reached = ml >= t.min * 1000;
+  const counter = (field, label, note, target) => {
+    const n = d[field] || 0;
+    return `<div class="check-row">
+      <span class="label">${label}<br><span class="muted small">${note}</span></span>
+      <button class="cnt-btn" data-count="${field}" data-delta="-1" aria-label="הפחתה" ${n ? '' : 'disabled'}>−</button>
+      <span class="cnt ${target && n >= target ? 'ok' : ''}">${n}</span>
+      <button class="cnt-btn" data-count="${field}" data-delta="1" aria-label="הוספה">+</button>
+    </div>`;
+  };
+  return `<div class="card water">
+    <h2>💧 שתייה</h2>
+    <div class="water-amount"><b>${fmtL(ml)}</b> ליטר <span class="muted">מתוך ${fmtL(t.min * 1000)}–${fmtL(t.max * 1000)} ל׳</span>${reached ? ' <span class="pill">✓ ביעד</span>' : ''}</div>
+    <div class="bar water-bar" role="progressbar" aria-valuemin="0" aria-valuemax="${t.max * 1000}" aria-valuenow="${ml}">
+      <div style="width:${pct}%" class="${reached ? 'ok' : ''}"></div><i style="inset-inline-start:${minPct}%" title="מינימום"></i>
+    </div>
+    <div class="water-btns">
+      <button class="btn" data-water="250"><span>+1 כוס</span><span class="small">250 מ״ל</span></button>
+      <button class="btn" data-water="500"><span>+½ ליטר</span><span class="small">500 מ״ל</span></button>
+      <button class="btn ghost" data-act="water-undo" aria-label="ביטול הוספה אחרונה" ${(d.waterLog || []).length ? '' : 'disabled'}>↶ ביטול</button>
+    </div>
+    ${fast ? `<div style="margin-top:10px">
+      ${counter('salt', '🧂 מים עם קורט מלח', 'יעד: 2–3 פעמים ביום', 2)}
+      ${counter('coffee', '☕ קפה', 'עד 2–3 כוסות ביום', 0)}
+    </div>` : ''}
+    ${fast && (d.coffee || 0) > 3 ? '<p class="note small" style="margin:8px 0 0">☕ יותר מ־3 כוסות קפה – כדאי לעבור למים או לתה צמחים.</p>' : ''}
+    <details class="water-tips"><summary>טיפים לשתייה</summary><ul class="small">${WATER_TIPS.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></details>
+  </div>`;
 }
 
 function sortedWeights(p) {
@@ -197,6 +263,8 @@ function renderToday() {
     ${checkRow('strength', 'אימון כוח', d.strength)}
   </div>`;
 
+  html += waterCard(p, k, d, fast);
+
   if (fast) {
     html += `<div class="card tips"><h2>טיפים ליום צום</h2><ul>${FAST_TIPS.map((t) => `<li>${esc(t)}</li>`).join('')}</ul></div>`;
   } else {
@@ -248,6 +316,8 @@ function renderWeek() {
   const fastDone = past.filter((k) => isFastDay(p, k) && dayData(p, k).adherence).length;
   const fastAll = past.filter((k) => isFastDay(p, k)).length;
   const water = past.filter((k) => dayData(p, k).water).length;
+  const waterDays = keys.map((k) => dayData(p, k).waterMl).filter((v) => v > 0);
+  const waterAvg = waterDays.length ? waterDays.reduce((a, b) => a + b, 0) / waterDays.length : 0;
   const strength = keys.filter((k) => dayData(p, k).strength).length;
   const stepsDays = keys.map((k) => dayData(p, k).steps).filter((s) => s > 0);
   const stepsAvg = stepsDays.length ? stepsDays.reduce((a, b) => a + b, 0) / stepsDays.length : 0;
@@ -272,6 +342,7 @@ function renderWeek() {
           <span class="dn">${fmtDate(k)}</span>
           <span class="kind">${fast ? 'צום' : 'אכילה'}</span>
           <span class="mark">${mark}</span>
+          <span class="wl">${dd.waterMl ? '💧' + fmtL(dd.waterMl) : ''}</span>
         </button>`;
       }).join('')}
     </div>
@@ -289,10 +360,30 @@ function renderWeek() {
     <p class="muted" style="margin:6px 0 0">${done} מתוך ${past.length} ימים עד כה${fastAll ? ` · צומות: ${fastDone}/${fastAll}` : ''}</p>
     <div class="stats" style="margin-top:12px">
       <div class="stat"><div class="v">${water}/${past.length}</div><div class="k">ימים עם מספיק שתייה</div></div>
+      <div class="stat"><div class="v">${waterAvg ? fmtL(waterAvg) + ' ל׳' : '–'}</div><div class="k">ממוצע שתייה ליום</div></div>
       <div class="stat"><div class="v">${strength}</div><div class="k">אימוני כוח</div></div>
       <div class="stat"><div class="v">${stepsAvg ? fmtInt(stepsAvg) : '–'}</div><div class="k">ממוצע צעדים ליום</div></div>
-      <div class="stat"><div class="v">${fastAll}</div><div class="k">ימי צום עד כה</div></div>
     </div>
+  </div>
+  <div class="card">
+    <h2>💧 שתייה השבוע</h2>
+    <div class="water-week">
+      ${keys.map((k) => {
+        const t = waterTarget(p, k);
+        const ml = dayData(p, k).waterMl || 0;
+        const scale = 4000;
+        const ok = ml >= t.min * 1000;
+        return `<div class="ww-col">
+          <div class="ww-val">${ml ? fmtL(ml) : ''}</div>
+          <div class="ww-track">
+            <i class="ww-target" style="bottom:${Math.min(100, (t.min * 1000 / scale) * 100)}%"></i>
+            <div class="ww-fill ${ok ? 'ok' : ''}" style="height:${Math.min(100, (ml / scale) * 100)}%"></div>
+          </div>
+          <div class="ww-day">${WEEKDAYS_SHORT[parseKey(k).getDay()]}</div>
+        </div>`;
+      }).join('')}
+    </div>
+    <p class="muted small" style="margin:8px 0 0">בליטרים. הקו האפור = מינימום היעד היומי (שונה בימי צום ובימי אכילה).${waterDays.length ? ` סה״כ השבוע: ${fmtL(waterDays.reduce((a, b) => a + b, 0))} ל׳.` : ''}</p>
   </div>`;
 }
 
@@ -618,6 +709,20 @@ function renderSettings() {
     <h3>הגדרות אישיות</h3>
     <div class="btn-row">${PROFILE_IDS.map((id) => `<button class="btn ghost" data-editsetup="${id}">${state.profiles[id].setup ? 'עריכה' : 'הגדרה'} – ${esc(state.profiles[id].name)}</button>`).join('')}</div>
   </div>
+  <form class="card" id="waterForm" autocomplete="off">
+    <h2>💧 יעד שתייה יומי (ליטרים)</h2>
+    ${PROFILE_IDS.map((id) => {
+      const t = waterTargets(state.profiles[id]);
+      const inp = (f, label) => `<label class="field" style="margin-top:6px"><span class="muted small">${label}</span><input type="number" inputmode="decimal" step="0.25" min="0.5" max="8" name="${id}-${f}" value="${t[f]}" required></label>`;
+      return `<h3>${esc(state.profiles[id].name)}</h3>
+        <div class="row">${inp('fastMin', 'יום צום – מ־')}${inp('fastMax', 'עד')}</div>
+        <div class="row">${inp('eatMin', 'יום אכילה – מ־')}${inp('eatMax', 'עד')}</div>`;
+    }).join('')}
+    <div class="btn-row">
+      <button class="btn" type="submit">שמירת יעדים</button>
+      <button class="btn ghost" type="button" data-act="water-defaults">ברירת מחדל</button>
+    </div>
+  </form>
   <div class="card">
     <h2>💾 גיבוי ושחזור</h2>
     <p class="muted" style="margin:0">הנתונים נשמרים רק בטלפון הזה, ועלולים להימחק (ניקוי דפדפן, החלפת מכשיר). כדאי לגבות פעם בשבועיים ולשמור את הקובץ בדרייב/וואטסאפ.</p>
@@ -708,6 +813,13 @@ document.addEventListener('click', (e) => {
     renderToday();
     return;
   }
+  if (t.dataset.water) { addWater(+t.dataset.water); renderToday(); return; }
+  if (t.dataset.count) {
+    const cur = dayData(profile(), viewDate)[t.dataset.count] || 0;
+    setDay(viewDate, { [t.dataset.count]: Math.max(0, cur + +t.dataset.delta) });
+    renderToday();
+    return;
+  }
   if (t.dataset.day) { viewDate = t.dataset.day; go('today'); return; }
   if (t.dataset.menuSel) { menuSel = t.dataset.menuSel; renderMenus(); return; }
   if (t.dataset.kind) { setupDraft.kind = t.dataset.kind; rerenderSetupKeepingInputs(); return; }
@@ -737,6 +849,12 @@ document.addEventListener('click', (e) => {
     case 'next-day': viewDate = addDays(viewDate, 1); renderToday(); break;
     case 'goto-today': viewDate = todayKey(); renderToday(); break;
     case 'go-weight': go('weight'); break;
+    case 'water-undo': undoWater(); renderToday(); break;
+    case 'water-defaults':
+      if (!confirm('להחזיר את יעדי השתייה לברירת המחדל?')) break;
+      PROFILE_IDS.forEach((id) => { delete state.profiles[id].water; });
+      save(); renderSettings(); toast('יעדי השתייה אופסו');
+      break;
     case 'go-menu': menuSel = t.dataset.menu; go('menus'); break;
     case 'prev-week': weekOffset--; renderWeek(); break;
     case 'next-week': if (weekOffset < 0) { weekOffset++; renderWeek(); } break;
@@ -816,6 +934,19 @@ document.addEventListener('submit', (e) => {
     state.shopping.push({ id: 'u' + Date.now().toString(36), text: text.slice(0, 80), done: false });
     save(); renderShop();
     $('#shopAdd input').focus();
+    return;
+  }
+  if (form.id === 'waterForm') {
+    const f = new FormData(form);
+    for (const id of PROFILE_IDS) {
+      const w = {};
+      for (const key of ['fastMin', 'fastMax', 'eatMin', 'eatMax']) w[key] = num(f.get(`${id}-${key}`));
+      if (Object.values(w).some((v) => !v || v <= 0)) { toast('נא למלא את כל היעדים'); return; }
+      if (w.fastMin > w.fastMax) [w.fastMin, w.fastMax] = [w.fastMax, w.fastMin];
+      if (w.eatMin > w.eatMax) [w.eatMin, w.eatMax] = [w.eatMax, w.eatMin];
+      state.profiles[id].water = w;
+    }
+    save(); renderSettings(); toast('יעדי השתייה נשמרו ✓');
     return;
   }
   if (form.id === 'namesForm') {

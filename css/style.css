@@ -230,3 +230,33 @@ body.setup-mode .tabbar, body.setup-mode .switcher { display: none; }
 @media (min-width: 520px) {
   .stats { grid-template-columns: repeat(4, 1fr); }
 }
+
+/* Water tracker */
+.water-amount { font-size: 1.05rem; margin-bottom: 8px; }
+.water-amount b { font-size: 1.8rem; color: var(--fast-ink); }
+.water-bar { position: relative; height: 16px; border-radius: 9px; overflow: visible; background: var(--fast); }
+.water-bar > div { background: #5b86c5; border-radius: 9px; transition: width .25s; }
+.water-bar > div.ok { background: var(--accent); }
+.water-bar > i { position: absolute; top: -4px; bottom: -4px; width: 2px; background: var(--fast-ink); opacity: .6; }
+.water-btns { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin-top: 14px; }
+.water-btns .btn { padding: 8px 10px; }
+.btn:disabled, .cnt-btn:disabled { opacity: .4; cursor: default; }
+.cnt-btn {
+  width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--line); background: #fff;
+  font-size: 1.4rem; line-height: 1; cursor: pointer; flex-shrink: 0;
+}
+.cnt { min-width: 28px; text-align: center; font-size: 1.3rem; font-weight: 800; }
+.cnt.ok { color: var(--accent); }
+.water-tips { margin-top: 12px; }
+.water-tips summary { font-weight: 600; color: var(--fast-ink); cursor: pointer; min-height: 32px; }
+.wday .wl { font-size: .68rem; min-height: 1em; }
+.water-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; align-items: end; }
+.ww-col { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.ww-val { font-size: .75rem; font-weight: 700; color: var(--fast-ink); min-height: 1.1em; }
+.ww-track { position: relative; width: 100%; max-width: 34px; height: 110px; background: var(--fast); border-radius: 8px; overflow: hidden; }
+.ww-fill { position: absolute; bottom: 0; inset-inline: 0; background: #5b86c5; border-radius: 8px 8px 0 0; }
+.ww-fill.ok { background: var(--accent); }
+.ww-target { position: absolute; inset-inline: 0; height: 2px; background: #7d8a86; z-index: 1; }
+.ww-day { font-size: .8rem; font-weight: 700; color: var(--muted); }
+.water-btns .btn[data-water] { flex-direction: column; gap: 0; line-height: 1.2; }
+.water-btns .btn[data-water] .small { font-weight: 400; opacity: .85; font-size: .78rem; }
