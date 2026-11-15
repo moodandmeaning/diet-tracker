@@ -107,3 +107,76 @@ const SAFETY = [
 
 const WEEKDAYS = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'];
 const WEEKDAYS_SHORT = ['א׳', 'ב׳', 'ג׳', 'ד׳', 'ה׳', 'ו׳', 'ש׳'];
+
+// Modified fast day (~570 kcal): protein + vegetables only
+const MODIFIED_FAST_MENU = {
+  title: 'תפריט יום צום מתון',
+  kcal: 570,
+  meals: [
+    { name: 'צהריים', text: '2 ביצים קשות + סלט גדול עם לימון וכפית שמן זית', kcal: 230 },
+    { name: 'אחר הצהריים', text: 'יוגורט חלבון', kcal: 140 },
+    { name: 'ערב', text: 'קופסת טונה במים + שעועית ירוקה / גזר מבושל / ירקות מאודים, בלי שמן', kcal: 200 },
+  ],
+  alt: 'חלופה לערב: 150 ג׳ חזה עוף בלי עור עם ירקות מאודים – ואז בלי היוגורט.',
+  note: 'ביום צום: רק חלבון וירקות – בלי לחם ובלי פחמימות.',
+};
+
+// Health adjustments per profile (general guidance, shown when checked in settings)
+const HEALTH = {
+  liver: {
+    label: 'כבד שומני', icon: '🫀',
+    tips: [
+      '🚫 בלי אלכוהול – לקידוש: מיץ ענבים.',
+      '🥤 בלי משקאות ממותקים ובלי מיצים.',
+      '☕ קפה בלי סוכר – מותר.',
+      '🚶 הליכה מהירה 30–45 דקות ברוב ימי השבוע.',
+      '⚖️ לא לרדת יותר מ־1.5 ק״ג בשבוע.',
+    ],
+  },
+  chol: {
+    label: 'כולסטרול גבוה', icon: '🫒',
+    tips: [
+      '🍗 עוף בלי עור.',
+      '🥩 בשר טחון 5% שומן בלבד. בשר אדום – עד פעמיים בשבוע.',
+      '🍲 חמין רזה יותר – פחות שומן ובשר שמן.',
+      '🧀 מעט גבינה צהובה ושמנת.',
+      '🐟 דג לפחות פעמיים בשבוע.',
+      '🥚 עד 2 חלמונים ביום – במקום ביצים נוספות: חלבונים.',
+    ],
+  },
+  uric: {
+    label: 'חומצה אורית גבוהה', icon: '💧',
+    tips: [
+      '💧 בימי צום – לשתות לפחות 3–3.5 ליטר מים.',
+      '🥤 בלי משקאות ממותקים.',
+      '🥩 בשר אדום – עד פעמיים בשבוע.',
+    ],
+    warn: 'כאב פתאומי, אודם ונפיחות במפרק (בעיקר בבוהן הגדולה) – לפנות לרופא/ה. ייתכן שזה התקף שיגדון (גאוט).',
+  },
+};
+const HEALTH_IDS = ['liver', 'chol', 'uric'];
+
+// Menu text changes for high cholesterol: [from, to]. Eggs – men's portions only (up to 2 yolks a day).
+const CHOL_SWAPS_M = [
+  ['חביתה מ־4 ביצים', 'חביתה מ־2 ביצים ו־2 חלבונים'],
+  ['שקשוקה מ־4 ביצים', 'שקשוקה מ־2 ביצים ו־2 חלבונים'],
+  ['חביתה מ־3 ביצים', 'חביתה מ־2 ביצים וחלבון אחד'],
+  ['3 ביצים קשות', '2 ביצים קשות'],
+];
+const CHOL_SWAPS_ALL = [
+  ['בשר טחון רזה', 'בשר טחון 5% שומן'],
+];
+
+// Blood tests. kind: 'max' = lower is better, 'min' = higher is better (HDL).
+// ok below `lim`, borderline up to `high`; values per sex where they differ.
+const LABS = [
+  { k: 'alt', name: 'ALT', he: 'אנזים כבד', unit: 'U/L', type: 'max', lim: 40, high: 80 },
+  { k: 'ast', name: 'AST', he: 'אנזים כבד', unit: 'U/L', type: 'max', lim: 40, high: 80 },
+  { k: 'ldl', name: 'LDL', he: 'כולסטרול ״רע״', unit: 'mg/dL', type: 'max', lim: 130, high: 160 },
+  { k: 'chol', name: 'כולסטרול כללי', he: '', unit: 'mg/dL', type: 'max', lim: 200, high: 240 },
+  { k: 'hdl', name: 'HDL', he: 'כולסטרול ״טוב״', unit: 'mg/dL', type: 'min', lim: { m: 40, f: 50 }, low: { m: 35, f: 45 } },
+  { k: 'tg', name: 'טריגליצרידים', he: 'שומנים בדם', unit: 'mg/dL', type: 'max', lim: 150, high: 200 },
+  { k: 'uric', name: 'חומצה אורית', he: '', unit: 'mg/dL', type: 'max', lim: { m: 7, f: 6 }, high: { m: 8, f: 7 } },
+  { k: 'a1c', name: 'HbA1c', he: 'המוגלובין מסוכרר', unit: '%', type: 'max', lim: 5.7, high: 6.5 },
+  { k: 'glu', name: 'סוכר בצום', he: 'גלוקוז', unit: 'mg/dL', type: 'max', lim: 100, high: 126 },
+];

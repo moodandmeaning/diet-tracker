@@ -3,7 +3,7 @@
 /* ============ Storage ============ */
 // All data lives only in this device's localStorage. Nothing personal is in the code.
 const STORE_KEY = 'hamaslul-v1';
-const APP_VERSION = 5;
+const APP_VERSION = 6;
 const PROFILE_IDS = ['p1', 'p2'];
 
 function defaultState() {
@@ -21,7 +21,7 @@ function defaultState() {
 
 function normalize(s) {
   const d = defaultState();
-  if (!s || typeof s !== 'object' || !s.profiles) return d;
+  if (!s || typeof s !== 'object' || !s.profiles) s = d;
   for (const id of PROFILE_IDS) {
     const p = s.profiles[id] || d.profiles[id];
     p.name = p.name || d.profiles[id].name;
@@ -40,10 +40,19 @@ function normalize(s) {
     }
     p.setup = p.setup || null;
     if (p.water && typeof p.water !== 'object') delete p.water;
+    // Fast type, health adjustments, blood tests, current menu document (all device-only)
+    p.fastType = p.fastType === 'modified' ? 'modified' : 'full';
+    const h = p.health && typeof p.health === 'object' ? p.health : {};
+    p.health = {};
+    for (const hid of HEALTH_IDS) if (h[hid]) p.health[hid] = true;
+    p.blood = Array.isArray(p.blood) ? p.blood.filter((b) => b && typeof b.date === 'string') : [];
+    p.bloodNext = typeof p.bloodNext === 'string' && p.bloodNext ? p.bloodNext : null;
+    p.menuDoc = typeof p.menuDoc === 'string' && p.menuDoc ? p.menuDoc : null;
     s.profiles[id] = p;
   }
   if (!PROFILE_IDS.includes(s.active)) s.active = 'p1';
   if (!Array.isArray(s.shopping)) s.shopping = d.shopping;
+  s.backupDocs = !!s.backupDocs;
   s.version = 1;
   return s;
 }
@@ -53,7 +62,7 @@ function load() {
     const raw = localStorage.getItem(STORE_KEY);
     return normalize(raw ? JSON.parse(raw) : null);
   } catch (e) {
-    return defaultState();
+    return normalize(null);
   }
 }
 
@@ -100,9 +109,17 @@ const DEFAULT_WATER = {
   f: { fastMin: 2.5, fastMax: 3, eatMin: 2, eatMax: 2.5 },
   m: { fastMin: 3, fastMax: 3.5, eatMin: 2.5, eatMax: 3 },
 };
-function waterTargets(p) {
-  return { ...DEFAULT_WATER[p.kind], ...(p.water || {}) };
+// raw = what the user set; otherwise the effective target (high uric acid: at least 3–3.5 L on fast days)
+function waterTargets(p, raw) {
+  const t = { ...DEFAULT_WATER[p.kind], ...(p.water || {}) };
+  if (!raw && p.health && p.health.uric) {
+    t.fastMin = Math.max(t.fastMin, 3);
+    t.fastMax = Math.max(t.fastMax, 3.5);
+  }
+  return t;
 }
+const hasHealth = (p) => HEALTH_IDS.some((h) => p.health && p.health[h]);
+const isModified = (p) => p.fastType === 'modified';
 function waterTarget(p, k) {
   const t = waterTargets(p);
   return isFastDay(p, k) ? { min: t.fastMin, max: t.fastMax } : { min: t.eatMin, max: t.eatMax };
@@ -203,6 +220,7 @@ let weekOffset = 0;
 let menuSel = null;
 let chart = null;
 let measureChart = null;
+let weightSub = 'body';      // 'body' | 'blood'
 const WHR_TARGET = { f: 0.85, m: 0.9 };
 
 function show(name) {
@@ -219,7 +237,7 @@ function render() {
   if (overlay === 'setup' || !p.setup) { show('setup'); renderSetup(overlay === 'setup' ? setupFor : state.active); return; }
 
   show(tab);
-  ({ today: renderToday, week: renderWeek, weight: renderWeight, menus: renderMenus, swaps: renderSwaps, shop: renderShop })[tab]();
+  ({ today: renderToday, week: renderWeek, weight: renderWeight, menus: renderMenus, swaps: renderSwaps, shop: renderShop, docs: renderDocs })[tab]();
 }
 
 function go(t) {
@@ -258,8 +276,17 @@ function renderToday() {
   </div>
   <div class="day-banner ${fast ? 'fast' : 'eat'}">
     <div class="big">${fast ? '💧 יום צום' : '🍽️ יום אכילה'}</div>
-    <div class="sub">${fast ? 'מים, תה וקפה שחור' : esc(calorieText(p, k))}</div>
+    <div class="sub">${fast ? (isModified(p) ? `צום מתון · כ־${MODIFIED_FAST_MENU.kcal} קק״ל, חלבון וירקות` : 'מים, תה וקפה שחור') : esc(calorieText(p, k))}</div>
   </div>`;
+
+  const menuDoc = docById(p.menuDoc);
+  if (menuDoc) {
+    html += `<button class="btn ghost block" data-act="open-mymenu">📄 התפריט שלי <span class="muted small">· ${esc(menuDoc.title)}</span></button>`;
+  }
+
+  if (isToday && p.bloodNext && k >= p.bloodNext) {
+    html += `<div class="banner">🩸 הגיע הזמן לבדיקת דם${k > p.bloodNext ? ` (תוכננה ל־${fmtDate(p.bloodNext)})` : ''}. <button class="btn" data-act="go-blood" style="min-height:40px;margin-inline-start:8px">לבדיקות דם</button></div>`;
+  }
 
   if (isToday && wd === p.setup.weighDay && !p.weights.some((w) => w.date === k)) {
     html += `<div class="banner">⚖️ היום יום שקילה! <button class="btn" data-act="go-weight" style="min-height:40px;margin-inline-start:8px">לשקילה</button></div>`;
@@ -277,6 +304,9 @@ function renderToday() {
   </div>`;
 
   html += waterCard(p, k, d, fast);
+
+  if (fast && isModified(p)) html += modifiedFastCard();
+  if (hasHealth(p)) html += healthCard(p, fast);
 
   if (fast) {
     html += `<div class="card tips"><h2>טיפים ליום צום</h2><ul>${FAST_TIPS.map((t) => `<li>${esc(t)}</li>`).join('')}</ul></div>`;
@@ -309,6 +339,37 @@ function checkRow(field, label, on) {
     <span class="label">${esc(label)}</span>
     <button class="tick ${on ? 'on' : ''}" data-check="${field}" aria-pressed="${!!on}" aria-label="${esc(label)}">${on ? '✓' : ''}</button>
   </div>`;
+}
+
+function modifiedFastCard() {
+  const m = MODIFIED_FAST_MENU;
+  return `<div class="card">
+    <h2>🥚 ${esc(m.title)} <span class="muted small">· כ־${m.kcal} קק״ל</span></h2>
+    ${m.meals.map((x) => `<div class="meal"><div class="mn">${esc(x.name)} <span class="muted small">· ${x.kcal} קק״ל</span></div><div>${esc(x.text)}</div></div>`).join('')}
+    <p class="small" style="margin:8px 0 0">🔁 ${esc(m.alt)}</p>
+    <p class="note small" style="margin:8px 0 0">🥗 ${esc(m.note)}</p>
+  </div>`;
+}
+
+function healthCard(p, fast) {
+  const ids = HEALTH_IDS.filter((h) => p.health[h]);
+  return `<div class="card health">
+    <h2>🩺 התאמות בריאותיות</h2>
+    ${p.health.uric && fast ? '<p class="note small" style="margin:0 0 8px">💧 יום צום + חומצה אורית גבוהה: לשתות לפחות 3–3.5 ליטר היום.</p>' : ''}
+    ${ids.map((h) => `<details class="howto"${ids.length === 1 ? ' open' : ''}><summary>${HEALTH[h].icon} ${esc(HEALTH[h].label)}</summary>
+      <ul class="small">${HEALTH[h].tips.map((t) => `<li>${esc(t)}</li>`).join('')}</ul></details>`).join('')}
+    ${p.health.uric ? `<p class="warn-line small">⚠️ ${esc(HEALTH.uric.warn)}</p>` : ''}
+  </div>`;
+}
+
+// Menu text for a given portion size, adjusted to the health settings of the profile eating it
+function menuText(meal, kind, prof) {
+  let t = meal[kind] || meal.f;
+  if (prof && prof.health && prof.health.chol) {
+    const swaps = [...(kind === 'm' ? CHOL_SWAPS_M : []), ...CHOL_SWAPS_ALL];
+    for (const [a, b] of swaps) t = t.split(a).join(b);
+  }
+  return t;
 }
 
 /* ============ Screen: Week ============ */
@@ -401,8 +462,26 @@ function renderWeek() {
 }
 
 /* ============ Screen: Weight ============ */
+function weightSeg() {
+  return `<div class="seg" role="tablist">
+    <button data-wsub="body" class="${weightSub === 'body' ? 'active' : ''}">⚖️ משקל ומדידות</button>
+    <button data-wsub="blood" class="${weightSub === 'blood' ? 'active' : ''}">🩸 בדיקות דם</button>
+  </div>`;
+}
+
+// Weekly loss rate (kg/week) between the latest weight and one at least 6 days earlier
+function weeklyLoss(p) {
+  const ws = sortedWeights(p);
+  if (ws.length < 2) return null;
+  const last = ws[ws.length - 1];
+  const ref = [...ws].reverse().find((w) => daysBetween(w.date, last.date) >= 6);
+  if (!ref) return null;
+  return ((ref.kg - last.kg) / daysBetween(ref.date, last.date)) * 7;
+}
+
 function renderWeight() {
   const p = profile();
+  if (weightSub === 'blood') { if (chart) { chart.destroy(); chart = null; } if (measureChart) { measureChart.destroy(); measureChart = null; } renderBlood(p); return; }
   const s = p.setup;
   const today = todayKey();
   const ws = sortedWeights(p);
@@ -423,7 +502,11 @@ function renderWeight() {
   ].filter((m, i, arr) => i === arr.length - 1 || m.target > s.goalWeight)
     .sort((a, b) => b.target - a.target);
 
-  let html = '';
+  let html = weightSeg();
+  const rate = p.health.liver ? weeklyLoss(p) : null;
+  if (rate != null && rate > 1.5) {
+    html += `<div class="banner">🫀 ירידה של כ־${fmtKg(rate)} ק״ג בשבוע – עם כבד שומני לא כדאי לרדת יותר מ־1.5 ק״ג בשבוע. כדאי להוסיף מעט בימי האכילה, או לעבור לצום מתון.</div>`;
+  }
   if (measureDue) {
     html += `<div class="note">📏 ${lastM ? `עברו ${daysBetween(lastM.date, today)} ימים מהמדידה האחרונה –` : 'עוד לא נרשמו מדידות גוף –'} הגיע הזמן למדוד מותניים וירכיים. <button class="btn ghost" data-act="go-measure" style="min-height:40px;margin-inline-start:6px">למדידה</button></div>`;
   }
@@ -484,6 +567,99 @@ function renderWeight() {
   $('#screen-weight').innerHTML = html;
   drawChart(p);
   drawMeasureChart(ms, p.kind === 'f');
+}
+
+/* ---- Blood tests ---- */
+const bySex = (v, kind) => (typeof v === 'object' ? v[kind] : v);
+const fmtLab = (n) => (Math.round(n * 10) / 10).toLocaleString('he-IL', { maximumFractionDigits: 1 });
+const LAB_ST = { ok: 'תקין', border: 'גבולי', high: 'גבוה', low: 'נמוך' };
+
+function labStatus(L, v, kind) {
+  if (L.type === 'min') {
+    if (v >= bySex(L.lim, kind)) return 'ok';
+    return v >= bySex(L.low, kind) ? 'border' : 'low';
+  }
+  if (v < bySex(L.lim, kind)) return 'ok';
+  return v < bySex(L.high, kind) ? 'border' : 'high';
+}
+
+function labRange(L, kind) {
+  const unit = L.unit === '%' ? '%' : ` ${L.unit}`;
+  return L.type === 'min' ? `תקין: מעל ${fmtLab(bySex(L.lim, kind))}${unit}` : `תקין: מתחת ל־${fmtLab(bySex(L.lim, kind))}${unit}`;
+}
+
+// "ירד מ־186 ל־150" – no arrows in Hebrew text
+function labChange(L, prev, last) {
+  if (prev === last) return { text: `ללא שינוי (${fmtLab(last)})`, cls: '' };
+  const down = last < prev;
+  const better = L.type === 'min' ? !down : down;
+  return { text: `${down ? 'ירד' : 'עלה'} מ־${fmtLab(prev)} ל־${fmtLab(last)}`, cls: better ? 'down' : 'up' };
+}
+
+function sortedBlood(p) {
+  return [...p.blood].sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function renderBlood(p) {
+  const today = todayKey();
+  const tests = sortedBlood(p);
+  const kind = p.kind;
+  const rows = LABS.map((L) => {
+    const withVal = tests.filter((t) => Number.isFinite(t[L.k]));
+    if (!withVal.length) return '';
+    const lastT = withVal[withVal.length - 1];
+    const v = lastT[L.k];
+    const st = labStatus(L, v, kind);
+    const ch = withVal.length > 1 ? labChange(L, withVal[withVal.length - 2][L.k], v) : null;
+    return `<div class="lab st-${st}">
+      <div class="lab-name"><b>${esc(L.name)}</b>${L.he ? ` <span class="muted small">${esc(L.he)}</span>` : ''}
+        <div class="muted small">${labRange(L, kind)}</div>
+        ${ch ? `<div class="chg ${ch.cls}">${ch.text}</div>` : ''}
+      </div>
+      <div class="lab-val"><b>${fmtLab(v)}</b><span class="lab-st">${LAB_ST[st]}</span>${lastT !== tests[tests.length - 1] ? `<span class="muted small">${fmtDate(lastT.date)}</span>` : ''}</div>
+    </div>`;
+  }).join('');
+
+  const next = p.bloodNext;
+  const nextIn = next ? daysBetween(today, next) : null;
+  let html = weightSeg();
+  if (next && nextIn <= 0) html += `<div class="banner">🩸 הגיע הזמן לבדיקת דם${nextIn < 0 ? ` (תוכננה ל־${fmtDate(next)})` : ''}.</div>`;
+
+  html += `<div class="card">
+    <h2>🩸 תוצאות אחרונות – ${esc(p.name)}</h2>
+    ${tests.length ? `<p class="muted small" style="margin:0 0 6px">בדיקה אחרונה: ${fmtDate(tests[tests.length - 1].date)}/${parseKey(tests[tests.length - 1].date).getFullYear()}${tests.length > 1 ? ' · השינוי מוצג לעומת הבדיקה הקודמת' : ''}</p>${rows}
+      <div class="legend" style="margin-top:10px"><span><i style="background:var(--eat-ink)"></i>תקין</span><span><i style="background:#c98a1a"></i>גבולי</span><span><i style="background:var(--danger-ink)"></i>גבוה / נמוך</span></div>`
+      : '<p class="muted" style="margin:0">עדיין אין בדיקות. אפשר להוסיף למטה – ממלאים רק את הערכים שיש.</p>'}
+  </div>
+
+  <div class="card">
+    <h2>📅 בדיקה הבאה</h2>
+    <label class="field" style="margin-top:0"><span class="muted small">תאריך מתוכנן (תזכורת תופיע במסך ״היום״)</span>
+      <input type="date" id="bloodNext" value="${next || ''}"></label>
+    ${next ? `<p class="small" style="margin:6px 0 0">${nextIn > 0 ? `בעוד ${nextIn} ימים` : nextIn === 0 ? '<b>היום</b>' : '<b style="color:var(--warn-ink)">הגיע הזמן</b>'} <button class="btn ghost" data-act="blood-next-clear" style="min-height:36px;margin-inline-start:6px">ניקוי</button></p>` : ''}
+  </div>
+
+  <form class="card" id="bloodForm" autocomplete="off">
+    <h2>➕ הוספת בדיקה</h2>
+    <label class="field" style="margin-top:0"><span>תאריך הבדיקה</span><input type="date" name="date" value="${today}" max="${today}" required></label>
+    <div class="lab-grid">
+      ${LABS.map((L) => `<label class="field"><span>${esc(L.name)} <span class="muted small">${L.unit}</span></span><input type="number" name="${L.k}" inputmode="decimal" step="any" min="0" placeholder="${L.he ? esc(L.he) : '–'}"></label>`).join('')}
+    </div>
+    <p class="muted small" style="margin:8px 0 0">כל השדות רשות. בדיקה באותו תאריך – מתעדכנת.</p>
+    <button class="btn block" type="submit" style="margin-top:12px">שמירת בדיקה</button>
+  </form>
+
+  ${tests.length ? `<div class="card">
+    <h2>היסטוריה</h2>
+    <ul class="log-list">${[...tests].reverse().map((t) => `<li>
+      <details class="grow"><summary><b>${fmtDate(t.date)}/${parseKey(t.date).getFullYear() % 100}</b> <span class="muted small">· ${LABS.filter((L) => Number.isFinite(t[L.k])).length} ערכים</span></summary>
+        <div class="small">${LABS.filter((L) => Number.isFinite(t[L.k])).map((L) => `<span class="lab-chip st-${labStatus(L, t[L.k], kind)}">${esc(L.name)} ${fmtLab(t[L.k])}</span>`).join(' ')}</div>
+      </details>
+      <button class="del" data-delb="${t.date}" aria-label="מחיקת בדיקה">🗑️</button></li>`).join('')}</ul>
+  </div>` : ''}
+  <p class="muted small" style="text-align:center;margin-top:10px">טווחים כלליים למבוגרים – הפירוש וההחלטות עם הרופא/ה. הנתונים נשמרים רק במכשיר הזה (וכלולים בגיבוי).</p>`;
+
+  $('#screen-weight').innerHTML = html;
 }
 
 const fmtCm = (n) => `${n < 0 ? '−' : n > 0 ? '+' : ''}${fmtKg(Math.abs(n))} ס״מ`;
@@ -659,21 +835,33 @@ function renderMenus() {
     const wd = new Date().getDay();
     menuSel = MENU_BY_WEEKDAY[wd] || 'A';
   }
-  const m = MENUS.find((x) => x.id === menuSel);
+  if (menuSel === 'FAST' && !isModified(p)) menuSel = 'A';
   const other = p.kind === 'f' ? 'm' : 'f';
   const otherLabel = other === 'm' ? 'לגבר' : 'לאישה';
+  // The partner whose portions are shown as "other" – use their health adjustments too
+  const otherProf = PROFILE_IDS.map((id) => state.profiles[id]).find((x) => x !== p && x.kind === other) || null;
+  const segs = `<div class="seg" role="tablist">${MENUS.map((x) => `<button data-menu-sel="${x.id}" class="${x.id === menuSel ? 'active' : ''}">${esc(x.title)}</button>`).join('')}${isModified(p) ? `<button data-menu-sel="FAST" class="${menuSel === 'FAST' ? 'active' : ''}">יום צום</button>` : ''}</div>`;
 
-  $('#screen-menus').innerHTML = `
-  <div class="seg" role="tablist">${MENUS.map((x) => `<button data-menu-sel="${x.id}" class="${x.id === menuSel ? 'active' : ''}">${esc(x.title)}</button>`).join('')}</div>
-  <div class="card">
+  let body;
+  if (menuSel === 'FAST') {
+    body = modifiedFastCard();
+  } else {
+    const m = MENUS.find((x) => x.id === menuSel);
+    const adjusted = p.health.chol;
+    body = `<div class="card">
     <h2>${esc(m.title)}${m.day !== m.title ? ` <span class="muted small">· ${esc(m.day)}</span>` : ''}</h2>
-    <p style="margin:0 0 6px"><span class="pill">מנות ל${esc(p.name)} · כ־${p.kind === 'f' ? '1,800' : '2,200–2,400'} קק״ל</span>${m.note ? ` <span class="pill">${esc(m.note)}</span>` : ''}</p>
+    <p style="margin:0 0 6px"><span class="pill">מנות ל${esc(p.name)} · כ־${p.kind === 'f' ? '1,800' : '2,200–2,400'} קק״ל</span>${m.note ? ` <span class="pill">${esc(m.note)}</span>` : ''}${adjusted ? ' <span class="pill warn">מותאם לכולסטרול גבוה</span>' : ''}</p>
     ${m.meals.map((meal) => {
-      const mine = meal[p.kind] || meal.f;
-      const theirs = meal[other] || meal.f;
+      const mine = menuText(meal, p.kind, p);
+      const theirs = menuText(meal, other, otherProf);
       return `<div class="meal"><div class="mn">${esc(meal.name)}</div><div>${esc(mine)}</div>${theirs !== mine ? `<div class="other">${otherLabel}: ${esc(theirs)}</div>` : ''}</div>`;
     }).join('')}
-  </div>
+  </div>`;
+  }
+
+  $('#screen-menus').innerHTML = `
+  ${segs}
+  ${body}
   <div class="card">
     <h2>כללים</h2>
     <ul>${MENU_RULES.map((r) => `<li>${esc(r)}</li>`).join('')}</ul>
@@ -730,6 +918,296 @@ function renderShop() {
       <button class="btn ghost" data-act="shop-default">שחזור רשימה מקורית</button>
     </div>
   </div>`;
+}
+
+/* ============ Documents (IndexedDB, device only) ============ */
+// Files are kept in IndexedDB on this device only – never uploaded anywhere.
+const DOCS_DB = 'hamaslul-docs';
+let dbPromise = null;
+let docs = null;              // in-memory list (with data) once loaded; null while loading
+let docsError = false;
+let pendingFile = null;       // file chosen, waiting for title/date/owner
+const docUrls = new Map();    // id -> object URL
+
+function idb() {
+  if (!dbPromise) {
+    dbPromise = new Promise((res, rej) => {
+      if (!('indexedDB' in window)) { rej(new Error('no idb')); return; }
+      const r = indexedDB.open(DOCS_DB, 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('docs', { keyPath: 'id' });
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+    dbPromise.catch(() => { dbPromise = null; });
+  }
+  return dbPromise;
+}
+
+function idbRun(mode, fn) {
+  return idb().then((db) => new Promise((res, rej) => {
+    const t = db.transaction('docs', mode);
+    const req = fn(t.objectStore('docs'));
+    t.oncomplete = () => res(req ? req.result : undefined);
+    t.onerror = () => rej(t.error);
+    t.onabort = () => rej(t.error || new Error('abort'));
+  }));
+}
+
+function loadDocs() {
+  return idbRun('readonly', (s) => s.getAll()).then((all) => {
+    docs = all || [];
+    docsError = false;
+  }).catch(() => { docs = []; docsError = true; });
+}
+
+const docById = (id) => (id && docs ? docs.find((d) => d.id === id) : null) || null;
+const docBlob = (d) => new Blob([d.data], { type: d.type || 'application/octet-stream' });
+function docUrl(d) {
+  if (!docUrls.has(d.id)) docUrls.set(d.id, URL.createObjectURL(docBlob(d)));
+  return docUrls.get(d.id);
+}
+function dropDocUrl(id) {
+  const u = docUrls.get(id);
+  if (u) { URL.revokeObjectURL(u); docUrls.delete(id); }
+}
+const docsBytes = () => (docs || []).reduce((a, d) => a + (d.size || 0), 0);
+const fmtMB = (b) => (b < 1024 * 1024 ? `${Math.max(1, Math.round(b / 1024))} KB` : `${(b / 1048576).toLocaleString('he-IL', { maximumFractionDigits: 1 })} MB`);
+const ownerName = (o) => (o === 'shared' ? 'משותף' : state.profiles[o] ? state.profiles[o].name : 'משותף');
+const isPdf = (d) => /pdf/i.test(d.type) || /\.pdf$/i.test(d.name || '');
+const docFileName = (d) => {
+  const ext = (d.name && d.name.includes('.')) ? d.name.slice(d.name.lastIndexOf('.')) : (isPdf(d) ? '.pdf' : '');
+  const base = String(d.title || 'מסמך').replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'מסמך';
+  return base.toLowerCase().endsWith(ext.toLowerCase()) ? base : base + ext;
+};
+
+function docsClear() {
+  for (const id of [...docUrls.keys()]) dropDocUrl(id);
+  docs = [];
+  return idbRun('readwrite', (s) => s.clear()).catch(() => {});
+}
+
+function openDoc(d) {
+  if (!d) { toast('המסמך לא נמצא במכשיר הזה'); return; }
+  const url = docUrl(d);
+  // Must stay synchronous inside the tap so the browser doesn't block the new tab
+  const w = window.open(url, '_blank');
+  if (!w) {
+    const a = document.createElement('a');
+    a.href = url; a.target = '_blank'; a.rel = 'noopener';
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+}
+
+function downloadDoc(d) {
+  const a = document.createElement('a');
+  a.href = docUrl(d); a.download = docFileName(d);
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+async function shareDoc(d) {
+  try {
+    const file = new File([d.data], docFileName(d), { type: d.type || 'application/octet-stream' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: d.title });
+      return;
+    }
+  } catch (e) {
+    if (e && e.name === 'AbortError') return;
+  }
+  downloadDoc(d);
+  toast('שיתוף לא נתמך כאן – הקובץ הורד');
+}
+
+function pickDoc() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/pdf,.pdf,image/*';
+  input.onchange = () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    if (!/pdf|image\//i.test(file.type) && !/\.pdf$/i.test(file.name)) { toast('אפשר להעלות רק PDF או תמונה'); return; }
+    pendingFile = file;
+    renderDocs();
+    const f = $('#docForm');
+    if (f) f.scrollIntoView({ block: 'start' });
+  };
+  input.click();
+}
+
+async function saveDoc(form) {
+  const f = new FormData(form);
+  const file = pendingFile;
+  if (!file) return;
+  const btn = form.querySelector('[type=submit]');
+  if (btn) btn.disabled = true;
+  try {
+    const rec = {
+      id: 'doc' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      title: String(f.get('title') || '').trim().slice(0, 80) || file.name,
+      date: f.get('date') || todayKey(),
+      owner: ['shared', ...PROFILE_IDS].includes(f.get('owner')) ? f.get('owner') : 'shared',
+      name: file.name,
+      type: file.type || (/\.pdf$/i.test(file.name) ? 'application/pdf' : ''),
+      size: file.size,
+      added: Date.now(),
+      data: await file.arrayBuffer(),
+    };
+    await idbRun('readwrite', (s) => s.put(rec));
+    docs = [...(docs || []), rec];
+    if (f.get('setMenu') && rec.owner !== 'shared') { state.profiles[rec.owner].menuDoc = rec.id; save(); }
+    pendingFile = null;
+    renderDocs();
+    toast('המסמך נשמר במכשיר ✓');
+  } catch (e) {
+    if (btn) btn.disabled = false;
+    toast(e && e.name === 'QuotaExceededError' ? 'אין מספיק מקום במכשיר' : 'שגיאה בשמירת הקובץ');
+  }
+}
+
+async function updateDoc(d, patch) {
+  const rec = { ...d, ...patch };
+  await idbRun('readwrite', (s) => s.put(rec));
+  docs = docs.map((x) => (x.id === d.id ? rec : x));
+}
+
+let storageEstimate = null;
+function refreshEstimate() {
+  if (!(navigator.storage && navigator.storage.estimate)) return;
+  navigator.storage.estimate().then((e) => {
+    const changed = !storageEstimate || storageEstimate.usage !== e.usage;
+    storageEstimate = e;
+    if (changed && tab === 'docs' && !overlay) renderDocs();
+  }).catch(() => {});
+}
+
+function renderDocs() {
+  const el = $('#screen-docs');
+  if (docs === null) { el.innerHTML = '<div class="card"><p class="muted" style="margin:0">טוען מסמכים…</p></div>'; return; }
+  const p = profile();
+  const today = todayKey();
+  const owners = ['shared', ...PROFILE_IDS];
+  const currentOf = (id) => PROFILE_IDS.filter((pid) => state.profiles[pid].menuDoc === id);
+  const sorted = [...docs].sort((a, b) => b.date.localeCompare(a.date) || b.added - a.added);
+
+  const docItem = (d) => {
+    const cur = currentOf(d.id);
+    const target = d.owner === 'shared' ? state.active : d.owner;
+    const isCur = state.profiles[target].menuDoc === d.id;
+    return `<div class="doc">
+      <div class="doc-head">
+        <span class="doc-ic" aria-hidden="true">${isPdf(d) ? '📄' : '🖼️'}</span>
+        <div class="grow">
+          <b>${esc(d.title)}</b>
+          <div class="muted small">${fmtDate(d.date)}/${parseKey(d.date).getFullYear()} · ${fmtMB(d.size)}</div>
+          ${cur.length ? `<div>${cur.map((pid) => `<span class="pill">⭐ התפריט הנוכחי${PROFILE_IDS.length > 1 ? ` של ${esc(state.profiles[pid].name)}` : ''}</span>`).join(' ')}</div>` : ''}
+        </div>
+      </div>
+      <div class="doc-acts">
+        <button class="btn" data-doc="open" data-id="${d.id}">פתיחה</button>
+        <button class="btn ghost" data-doc="share" data-id="${d.id}">שיתוף</button>
+        <button class="btn ghost" data-doc="download" data-id="${d.id}">הורדה</button>
+        <button class="btn ghost" data-doc="rename" data-id="${d.id}">שינוי שם</button>
+        <button class="btn ghost" data-doc="menu" data-id="${d.id}">${isCur ? 'ביטול תפריט נוכחי' : 'קבע כתפריט נוכחי'}${d.owner === 'shared' ? ` ל${esc(state.profiles[target].name)}` : ''}</button>
+        <button class="btn danger" data-doc="delete" data-id="${d.id}">מחיקה</button>
+      </div>
+    </div>`;
+  };
+
+  let html = `<div class="card">
+    <h2>📁 מסמכים</h2>
+    <p class="muted small" style="margin:0 0 10px">תפריטים מעודכנים ומסמכים אחרים (PDF או תמונה).</p>
+    <button class="btn block" data-act="doc-pick">➕ העלאת קובץ</button>
+    ${docsError ? '<p class="warn-line small">לא ניתן לשמור מסמכים בדפדפן הזה (ייתכן שזה מצב גלישה פרטית).</p>' : ''}
+  </div>`;
+
+  if (pendingFile) {
+    const base = pendingFile.name.replace(/\.[^.]+$/, '');
+    html += `<form class="card" id="docForm" autocomplete="off">
+      <h2>פרטי המסמך</h2>
+      <p class="muted small" style="margin:0">${esc(pendingFile.name)} · ${fmtMB(pendingFile.size)}</p>
+      <label class="field"><span>כותרת</span><input type="text" name="title" value="${esc(base)}" maxlength="80" required></label>
+      <label class="field"><span>תאריך</span><input type="date" name="date" value="${today}" required></label>
+      <label class="field"><span>שייך ל־</span>
+        <select name="owner">${owners.map((o) => `<option value="${o}" ${o === state.active ? 'selected' : ''}>${esc(ownerName(o))}</option>`).join('')}</select></label>
+      <label class="chk"><input type="checkbox" name="setMenu"> לקבוע כתפריט הנוכחי (לא חל על ״משותף״)</label>
+      <div class="btn-row">
+        <button class="btn" type="submit">שמירה</button>
+        <button class="btn ghost" type="button" data-act="doc-cancel">ביטול</button>
+      </div>
+    </form>`;
+  }
+
+  const groups = owners.map((o) => ({ o, list: sorted.filter((d) => (owners.includes(d.owner) ? d.owner : 'shared') === o) })).filter((g) => g.list.length);
+  if (!groups.length && !pendingFile) {
+    html += '<div class="card"><p class="muted" style="margin:0">עדיין אין מסמכים.</p></div>';
+  }
+  for (const g of groups) {
+    html += `<div class="card"><h2>${g.o === 'shared' ? '👥 משותף' : `👤 ${esc(ownerName(g.o))}`} <span class="muted small">· ${g.list.length}</span></h2>${g.list.map(docItem).join('')}</div>`;
+  }
+
+  const est = storageEstimate;
+  html += `<div class="card">
+    <h2>💽 אחסון</h2>
+    <p style="margin:0">המסמכים תופסים <b>${fmtMB(docsBytes())}</b>${docs.length ? ` (${docs.length} קבצים)` : ''}.</p>
+    ${est && est.quota ? `<p class="muted small" style="margin:4px 0 0">שטח פנוי לאפליקציה במכשיר: כ־${fmtMB(Math.max(0, est.quota - est.usage))}</p>` : ''}
+    <p class="note small" style="margin:10px 0 0">📱 המסמכים נשמרים רק במכשיר הזה. בטלפון אחר צריך להעלות אותם שוב או לשחזר מגיבוי.</p>
+  </div>`;
+  if (p && docs.length && !state.backupDocs) html += '<p class="muted small" style="text-align:center">כדי לגבות גם את המסמכים: ⚙️ הגדרות › גיבוי › ״לכלול מסמכים בגיבוי״.</p>';
+
+  el.innerHTML = html;
+  refreshEstimate();
+}
+
+async function docAction(act, id) {
+  const d = docById(id);
+  if (!d) { toast('המסמך לא נמצא'); return; }
+  if (act === 'open') { openDoc(d); return; }
+  if (act === 'download') { downloadDoc(d); return; }
+  if (act === 'share') { shareDoc(d); return; }
+  if (act === 'rename') {
+    const t = prompt('שם חדש למסמך:', d.title);
+    if (t == null) return;
+    const title = t.trim().slice(0, 80);
+    if (!title) return;
+    try { await updateDoc(d, { title }); renderDocs(); toast('השם עודכן ✓'); } catch (e) { toast('שגיאה בשמירה'); }
+    return;
+  }
+  if (act === 'menu') {
+    const pid = d.owner === 'shared' ? state.active : d.owner;
+    const prof = state.profiles[pid];
+    prof.menuDoc = prof.menuDoc === d.id ? null : d.id;
+    save(); renderDocs();
+    toast(prof.menuDoc ? `נקבע כתפריט הנוכחי של ${prof.name} ✓` : 'בוטל');
+    return;
+  }
+  if (act === 'delete') {
+    if (!confirm(`למחוק את ״${d.title}״ מהמכשיר?`)) return;
+    try {
+      await idbRun('readwrite', (s) => s.delete(d.id));
+      docs = docs.filter((x) => x.id !== d.id);
+      dropDocUrl(d.id);
+      let changed = false;
+      for (const pid of PROFILE_IDS) if (state.profiles[pid].menuDoc === d.id) { state.profiles[pid].menuDoc = null; changed = true; }
+      if (changed) save();
+      renderDocs(); toast('המסמך נמחק');
+    } catch (e) { toast('שגיאה במחיקה'); }
+  }
+}
+
+// Backup helpers: ArrayBuffer <-> base64
+function bufToB64(buf, type) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result).split(',')[1] || '');
+    r.onerror = () => rej(r.error);
+    r.readAsDataURL(new Blob([buf], { type: type || 'application/octet-stream' }));
+  });
+}
+function b64ToBuf(b64) {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out.buffer;
 }
 
 /* ============ Setup ============ */
@@ -837,14 +1315,30 @@ function renderSettings() {
     <h3>הגדרות אישיות</h3>
     <div class="btn-row">${PROFILE_IDS.map((id) => `<button class="btn ghost" data-editsetup="${id}">${state.profiles[id].setup ? 'עריכה' : 'הגדרה'} – ${esc(state.profiles[id].name)}</button>`).join('')}</div>
   </div>
+  <div class="card" id="healthSettings">
+    <h2>🩺 סוג יום צום והתאמות בריאותיות</h2>
+    ${PROFILE_IDS.map((id) => {
+      const pr = state.profiles[id];
+      return `<h3>${esc(pr.name)}</h3>
+        <span class="muted small">סוג יום צום</span>
+        <div class="seg wrap" role="radiogroup" aria-label="סוג יום צום – ${esc(pr.name)}">
+          <button type="button" role="radio" aria-checked="${pr.fastType === 'full'}" data-fasttype="${id}:full" class="${pr.fastType === 'full' ? 'active' : ''}">צום מלא</button>
+          <button type="button" role="radio" aria-checked="${pr.fastType === 'modified'}" data-fasttype="${id}:modified" class="${pr.fastType === 'modified' ? 'active' : ''}">צום מתון <span class="nw">(500–600 קלוריות)</span></button>
+        </div>
+        <span class="muted small" style="display:block;margin-top:10px">התאמות בריאותיות</span>
+        ${HEALTH_IDS.map((h) => `<label class="chk"><input type="checkbox" data-health="${id}:${h}" ${pr.health[h] ? 'checked' : ''}> ${esc(HEALTH[h].label)}</label>`).join('')}`;
+    }).join('')}
+    <p class="muted small" style="margin:10px 0 0">הטיפים יופיעו במסך ״היום״. ״כולסטרול גבוה״ מתאים גם את המנות בתפריטים. בדיקות דם: בלשונית ⚖️ משקל.</p>
+  </div>
   <form class="card" id="waterForm" autocomplete="off">
     <h2>💧 יעד שתייה יומי (ליטרים)</h2>
     ${PROFILE_IDS.map((id) => {
-      const t = waterTargets(state.profiles[id]);
+      const t = waterTargets(state.profiles[id], true);
       const inp = (f, label) => `<label class="field" style="margin-top:6px"><span class="muted small">${label}</span><input type="number" inputmode="decimal" step="0.25" min="0.5" max="8" name="${id}-${f}" value="${t[f]}" required></label>`;
       return `<h3>${esc(state.profiles[id].name)}</h3>
         <div class="row">${inp('fastMin', 'יום צום – מ־')}${inp('fastMax', 'עד')}</div>
-        <div class="row">${inp('eatMin', 'יום אכילה – מ־')}${inp('eatMax', 'עד')}</div>`;
+        <div class="row">${inp('eatMin', 'יום אכילה – מ־')}${inp('eatMax', 'עד')}</div>
+        ${state.profiles[id].health.uric ? '<p class="muted small" style="margin:6px 0 0">💧 בגלל חומצה אורית גבוהה, היעד בימי צום הוא לפחות 3–3.5 ל׳.</p>' : ''}`;
     }).join('')}
     <div class="btn-row">
       <button class="btn" type="submit">שמירת יעדים</button>
@@ -855,6 +1349,8 @@ function renderSettings() {
     <h2>💾 גיבוי ושחזור</h2>
     <p class="muted" style="margin:0">הנתונים נשמרים רק בטלפון הזה, ועלולים להימחק (ניקוי דפדפן, החלפת מכשיר). כדאי לגבות פעם בשבועיים ולשמור את הקובץ בדרייב/וואטסאפ.</p>
     <p class="small" style="margin:8px 0 0">גיבוי אחרון: <b>${state.lastBackup ? fmtDate(state.lastBackup.slice(0, 10)) + '/' + state.lastBackup.slice(0, 4) : 'אף פעם'}</b></p>
+    <label class="chk"><input type="checkbox" id="backupDocs" ${state.backupDocs ? 'checked' : ''}> לכלול מסמכים בגיבוי</label>
+    ${state.backupDocs ? `<p class="warn-line small">קובץ הגיבוי יהיה גדול יותר${docs && docs.length ? ` – בערך ${fmtMB(docsBytes() * 1.37 + 20000)}` : ''}.</p>` : ''}
     <div class="btn-row">
       <button class="btn" data-act="backup">⬇️ גיבוי</button>
       <button class="btn ghost" data-act="restore">⬆️ שחזור</button>
@@ -871,7 +1367,22 @@ function renderSettings() {
 /* ============ Backup / restore ============ */
 async function backup() {
   const stamp = new Date().toISOString();
-  const payload = JSON.stringify({ app: 'hamaslul', version: 1, exportedAt: stamp, data: { ...state, lastBackup: stamp } }, null, 2);
+  const out = { app: 'hamaslul', version: 1, exportedAt: stamp, data: { ...state, lastBackup: stamp } };
+  if (state.backupDocs) {
+    if (docs === null) await loadDocs();
+    try {
+      toast('מכין גיבוי עם מסמכים…');
+      out.docs = [];
+      for (const d of docs) {
+        const { data, ...meta } = d;
+        out.docs.push({ ...meta, b64: await bufToB64(data, d.type) });
+      }
+    } catch (e) {
+      toast('שגיאה בהכנת המסמכים לגיבוי');
+      return;
+    }
+  }
+  const payload = JSON.stringify(out, null, out.docs && out.docs.length ? 0 : 2);
   const name = `hamaslul-backup-${todayKey()}.json`;
   const blob = new Blob([payload], { type: 'application/json' });
   let ok = false;
@@ -893,7 +1404,7 @@ async function backup() {
   }
   state.lastBackup = stamp;
   save();
-  toast('הגיבוי נשמר ✓');
+  toast(out.docs ? `הגיבוי נשמר ✓ (כולל ${out.docs.length} מסמכים)` : 'הגיבוי נשמר ✓');
   render();
 }
 
@@ -908,12 +1419,35 @@ function restore() {
       const obj = JSON.parse(await file.text());
       const data = obj && obj.app === 'hamaslul' ? obj.data : obj;
       if (!data || !data.profiles || !PROFILE_IDS.some((id) => data.profiles[id])) throw new Error('bad');
-      if (!confirm('השחזור יחליף את כל הנתונים במכשיר הזה. להמשיך?')) return;
+      const bdocs = obj && Array.isArray(obj.docs) ? obj.docs.filter((d) => d && d.id && typeof d.b64 === 'string') : [];
+      const msg = bdocs.length
+        ? `השחזור יחליף את כל הנתונים במכשיר הזה, ויוסיף ${bdocs.length} מסמכים מהגיבוי (מסמכים שכבר במכשיר יישארו). להמשיך?`
+        : 'השחזור יחליף את כל הנתונים במכשיר הזה. להמשיך?';
+      if (!confirm(msg)) return;
       state = normalize(data);
       save();
-      overlay = null; setupDraft = null; tab = 'today'; viewDate = todayKey();
+      let restoredDocs = 0;
+      if (bdocs.length) {
+        try {
+          const recs = bdocs.map(({ b64, ...meta }) => ({
+            ...meta,
+            title: String(meta.title || meta.name || 'מסמך'),
+            date: typeof meta.date === 'string' ? meta.date : todayKey(),
+            owner: ['shared', ...PROFILE_IDS].includes(meta.owner) ? meta.owner : 'shared',
+            added: meta.added || Date.now(),
+            data: b64ToBuf(b64),
+          }));
+          await idbRun('readwrite', (s) => { recs.forEach((r) => s.put(r)); return null; });
+          recs.forEach((r) => dropDocUrl(r.id));
+          restoredDocs = recs.length;
+        } catch (e) {
+          toast('הנתונים שוחזרו, אבל המסמכים לא נשמרו (אין מקום?)');
+        }
+        await loadDocs();
+      }
+      overlay = null; setupDraft = null; pendingFile = null; tab = 'today'; viewDate = todayKey();
       render();
-      toast('הנתונים שוחזרו ✓');
+      if (!bdocs.length || restoredDocs) toast(restoredDocs ? `הנתונים ו־${restoredDocs} מסמכים שוחזרו ✓` : 'הנתונים שוחזרו ✓');
     } catch (e) {
       toast('הקובץ לא תקין');
     }
@@ -974,6 +1508,21 @@ document.addEventListener('click', (e) => {
     $('#measureCard').scrollIntoView({ block: 'start' });
     return;
   }
+  if (t.dataset.wsub) { weightSub = t.dataset.wsub; renderWeight(); return; }
+  if (t.dataset.delb) {
+    if (!confirm('למחוק את בדיקת הדם?')) return;
+    const p = profile();
+    p.blood = p.blood.filter((b) => b.date !== t.dataset.delb);
+    save(); renderWeight();
+    return;
+  }
+  if (t.dataset.fasttype) {
+    const [pid, ft] = t.dataset.fasttype.split(':');
+    state.profiles[pid].fastType = ft === 'modified' ? 'modified' : 'full';
+    save(); renderSettings(); toast('סוג יום הצום נשמר ✓');
+    return;
+  }
+  if (t.dataset.doc) { docAction(t.dataset.doc, t.dataset.id); return; }
   if (t.dataset.shopdel) {
     state.shopping = state.shopping.filter((i) => i.id !== t.dataset.shopdel);
     save(); renderShop();
@@ -984,7 +1533,12 @@ document.addEventListener('click', (e) => {
     case 'prev-day': viewDate = addDays(viewDate, -1); renderToday(); break;
     case 'next-day': viewDate = addDays(viewDate, 1); renderToday(); break;
     case 'goto-today': viewDate = todayKey(); renderToday(); break;
-    case 'go-weight': go('weight'); break;
+    case 'go-weight': weightSub = 'body'; go('weight'); break;
+    case 'go-blood': weightSub = 'blood'; go('weight'); break;
+    case 'open-mymenu': openDoc(docById(profile().menuDoc)); break;
+    case 'doc-pick': pickDoc(); break;
+    case 'doc-cancel': pendingFile = null; renderDocs(); break;
+    case 'blood-next-clear': profile().bloodNext = null; save(); renderWeight(); break;
     case 'go-measure': { const c = $('#measureCard'); if (c) c.scrollIntoView({ behavior: 'smooth', block: 'start' }); break; }
     case 'water-undo': undoWater(); renderToday(); break;
     case 'water-defaults':
@@ -1008,9 +1562,10 @@ document.addEventListener('click', (e) => {
     case 'close-settings': overlay = null; render(); break;
     case 'setup-cancel': overlay = null; setupFor = null; setupDraft = null; overlay = 'settings'; render(); break;
     case 'wipe':
-      if (!confirm('למחוק את כל הנתונים של שני הפרופילים? כדאי לגבות קודם.')) break;
+      if (!confirm('למחוק את כל הנתונים של שני הפרופילים, כולל בדיקות הדם והמסמכים? כדאי לגבות קודם.')) break;
       if (!confirm('בטוח? אי אפשר לבטל.')) break;
-      state = defaultState(); save(); overlay = null; setupDraft = null; tab = 'today'; render();
+      state = normalize(null); save(); overlay = null; setupDraft = null; tab = 'today';
+      docsClear().then(() => render(), () => render());
       break;
   }
 });
@@ -1041,6 +1596,20 @@ document.addEventListener('change', (e) => {
   if (e.target.matches('[data-shop]')) {
     const item = state.shopping.find((i) => i.id === e.target.dataset.shop);
     if (item) { item.done = e.target.checked; save(); renderShop(); }
+  }
+  if (e.target.matches('[data-health]')) {
+    const [pid, h] = e.target.dataset.health.split(':');
+    const pr = state.profiles[pid];
+    if (e.target.checked) pr.health[h] = true; else delete pr.health[h];
+    save(); renderSettings(); toast('נשמר ✓');
+  }
+  if (e.target.id === 'backupDocs') {
+    state.backupDocs = e.target.checked;
+    save(); renderSettings();
+  }
+  if (e.target.id === 'bloodNext') {
+    profile().bloodNext = e.target.value || null;
+    save(); renderWeight(); toast(e.target.value ? 'נשמר – תזכורת תופיע במועד ✓' : 'נוקה');
   }
 });
 
@@ -1089,6 +1658,28 @@ document.addEventListener('submit', (e) => {
     toast('המדידה נשמרה ✓');
     return;
   }
+  if (form.id === 'docForm') { saveDoc(form); return; }
+  if (form.id === 'bloodForm') {
+    const f = new FormData(form);
+    const date = f.get('date');
+    if (!date) { toast('נא לבחור תאריך'); return; }
+    if (date > todayKey()) { toast('תאריך הבדיקה לא יכול להיות בעתיד'); return; }
+    const vals = {};
+    for (const L of LABS) {
+      const v = num(f.get(L.k));
+      if (v != null && v >= 0) vals[L.k] = Math.round(v * 100) / 100;
+    }
+    if (!Object.keys(vals).length) { toast('נא למלא לפחות ערך אחד'); return; }
+    const p = profile();
+    const prev = p.blood.find((b) => b.date === date) || {};
+    p.blood = p.blood.filter((b) => b.date !== date);
+    p.blood.push({ ...prev, date, ...vals });
+    let cleared = false;
+    if (p.bloodNext && date >= p.bloodNext) { p.bloodNext = null; cleared = true; }
+    save(); renderWeight(); window.scrollTo(0, 0);
+    toast(cleared ? 'הבדיקה נשמרה ✓ אפשר לקבוע בדיקה הבאה' : 'הבדיקה נשמרה ✓');
+    return;
+  }
   if (form.id === 'shopAdd') {
     const text = String(new FormData(form).get('text') || '').trim();
     if (!text) return;
@@ -1132,6 +1723,9 @@ document.addEventListener('visibilitychange', () => {
 
 /* ============ Boot ============ */
 render();
+loadDocs().then(() => {
+  if (!overlay && (tab === 'today' || tab === 'docs')) render();
+});
 
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {

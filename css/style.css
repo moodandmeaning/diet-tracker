@@ -207,13 +207,13 @@ label.field > span { display: block; font-weight: 600; margin-bottom: 4px; font-
 /* Tab bar */
 .tabbar {
   position: fixed; bottom: 0; inset-inline: 0; z-index: 10;
-  display: grid; grid-template-columns: repeat(6, 1fr);
+  display: grid; grid-template-columns: repeat(7, 1fr);
   background: #fff; border-top: 1px solid var(--line);
   padding-bottom: var(--safe-b); height: calc(var(--tab-h) + var(--safe-b));
 }
 .tabbar button {
   border: 0; background: none; display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 2px; font-size: .72rem; color: var(--muted); cursor: pointer; min-height: 44px;
+  gap: 2px; font-size: .68rem; color: var(--muted); cursor: pointer; min-height: 44px; padding: 0 1px; min-width: 0;
 }
 .tabbar .ti { font-size: 1.3rem; filter: grayscale(.6); opacity: .8; }
 .tabbar button.active { color: var(--accent); font-weight: 700; }
@@ -275,3 +275,48 @@ body.setup-mode .tabbar, body.setup-mode .switcher { display: none; }
 .whr.ok .whr-v { color: var(--eat-ink); }
 .whr.over .whr-v { color: var(--warn-ink); }
 .small-chart { height: 190px; }
+
+/* Health settings & tips */
+.seg.wrap button { white-space: normal; line-height: 1.25; padding: 6px 10px; }
+label.chk { display: flex; align-items: center; gap: 10px; min-height: 48px; cursor: pointer; font-weight: 500; }
+label.chk input { width: 22px; height: 22px; accent-color: var(--accent); flex-shrink: 0; margin: 0; }
+.warn-line { background: var(--danger-bg); color: var(--danger-ink); border-radius: 10px; padding: 8px 10px; margin: 10px 0 0; font-weight: 600; }
+.health .howto { margin-top: 6px; }
+.pill.warn { background: var(--warn-bg); color: var(--warn-ink); }
+
+/* Blood tests */
+.lab { display: flex; align-items: flex-start; gap: 10px; padding: 10px 10px; margin-top: 8px; border-radius: 12px; border: 1px solid var(--line); border-inline-start-width: 5px; }
+.lab-name { flex: 1; min-width: 0; }
+.lab .chg { font-size: .85rem; font-weight: 600; color: var(--muted); margin-top: 2px; }
+.lab .chg.down { color: var(--eat-ink); }
+.lab .chg.up { color: var(--danger-ink); }
+.lab-val { display: flex; flex-direction: column; align-items: center; min-width: 64px; text-align: center; }
+.lab-val b { font-size: 1.35rem; line-height: 1.2; }
+.lab-st { font-size: .78rem; font-weight: 700; border-radius: 12px; padding: 1px 8px; }
+.lab.st-ok { border-inline-start-color: var(--eat-ink); }
+.lab.st-ok .lab-val b { color: var(--eat-ink); }
+.lab.st-ok .lab-st { background: var(--eat); color: var(--eat-ink); }
+.lab.st-border { border-inline-start-color: #c98a1a; background: #fffaf1; }
+.lab.st-border .lab-val b { color: var(--warn-ink); }
+.lab.st-border .lab-st { background: var(--warn-bg); color: var(--warn-ink); }
+.lab.st-high, .lab.st-low { border-inline-start-color: var(--danger-ink); background: #fff7f7; }
+.lab.st-high .lab-val b, .lab.st-low .lab-val b { color: var(--danger-ink); }
+.lab.st-high .lab-st, .lab.st-low .lab-st { background: var(--danger-bg); color: var(--danger-ink); }
+.lab-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
+.lab-grid label.field > span { font-size: .88rem; }
+.lab-chip { display: inline-block; border-radius: 10px; padding: 2px 8px; margin: 4px 0 0; background: var(--eat); color: var(--eat-ink); }
+.lab-chip.st-border { background: var(--warn-bg); color: var(--warn-ink); }
+.lab-chip.st-high, .lab-chip.st-low { background: var(--danger-bg); color: var(--danger-ink); }
+.log-list details summary { cursor: pointer; min-height: 32px; }
+
+/* Documents */
+.doc { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.doc:last-child { border-bottom: 0; padding-bottom: 0; }
+.doc-head { display: flex; gap: 10px; align-items: flex-start; }
+.doc-head .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.doc-ic { font-size: 1.6rem; line-height: 1.2; }
+.doc-acts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 10px; }
+.doc-acts .btn { min-height: 44px; padding: 6px 6px; font-size: .88rem; line-height: 1.2; }
+.doc-acts [data-doc=menu] { grid-column: span 2; }
+select { appearance: auto; }
+.nw { white-space: nowrap; display: inline-block; }
