@@ -320,3 +320,6 @@ label.chk input { width: 22px; height: 22px; accent-color: var(--accent); flex-s
 .doc-acts [data-doc=menu] { grid-column: span 2; }
 select { appearance: auto; }
 .nw { white-space: nowrap; display: inline-block; }
+.pend-meta { display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+.pend-meta .grow { flex: 1; min-width: 0; }
+.pend-meta .del { min-height: 36px; }

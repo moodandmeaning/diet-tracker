@@ -3,7 +3,7 @@
 /* ============ Storage ============ */
 // All data lives only in this device's localStorage. Nothing personal is in the code.
 const STORE_KEY = 'hamaslul-v1';
-const APP_VERSION = 6;
+const APP_VERSION = 7;
 const PROFILE_IDS = ['p1', 'p2'];
 
 function defaultState() {
@@ -926,7 +926,7 @@ const DOCS_DB = 'hamaslul-docs';
 let dbPromise = null;
 let docs = null;              // in-memory list (with data) once loaded; null while loading
 let docsError = false;
-let pendingFile = null;       // file chosen, waiting for title/date/owner
+let pendingFiles = [];       // files chosen, waiting for title/date/owner
 const docUrls = new Map();    // id -> object URL
 
 function idb() {
@@ -973,6 +973,7 @@ function dropDocUrl(id) {
 const docsBytes = () => (docs || []).reduce((a, d) => a + (d.size || 0), 0);
 const fmtMB = (b) => (b < 1024 * 1024 ? `${Math.max(1, Math.round(b / 1024))} KB` : `${(b / 1048576).toLocaleString('he-IL', { maximumFractionDigits: 1 })} MB`);
 const ownerName = (o) => (o === 'shared' ? 'משותף' : state.profiles[o] ? state.profiles[o].name : 'משותף');
+const extLabel = (f) => { const m = /\.([a-z0-9]{1,5})$/i.exec(f.name || ''); return m ? m[1].toUpperCase() : (isPdf(f) ? 'PDF' : 'תמונה'); };
 const isPdf = (d) => /pdf/i.test(d.type) || /\.pdf$/i.test(d.name || '');
 const docFileName = (d) => {
   const ext = (d.name && d.name.includes('.')) ? d.name.slice(d.name.lastIndexOf('.')) : (isPdf(d) ? '.pdf' : '');
@@ -1022,45 +1023,68 @@ function pickDoc() {
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = 'application/pdf,.pdf,image/*';
+  input.multiple = true;
   input.onchange = () => {
-    const file = input.files && input.files[0];
-    if (!file) return;
-    if (!/pdf|image\//i.test(file.type) && !/\.pdf$/i.test(file.name)) { toast('אפשר להעלות רק PDF או תמונה'); return; }
-    pendingFile = file;
+    const files = [...(input.files || [])];
+    if (!files.length) return;
+    const ok = files.filter((file) => /pdf|image\//i.test(file.type) || /\.pdf$/i.test(file.name));
+    if (ok.length < files.length) toast(ok.length ? `${files.length - ok.length} קבצים דולגו – רק PDF או תמונה` : 'אפשר להעלות רק PDF או תמונה');
+    if (!ok.length) return;
+    // Picking again before saving adds to the waiting list (keeping titles already typed)
+    const typed = readDocTitles();
+    pendingFiles = [...pendingFiles, ...ok];
     renderDocs();
+    restoreDocTitles(typed);
     const f = $('#docForm');
     if (f) f.scrollIntoView({ block: 'start' });
   };
   input.click();
 }
 
+const readDocTitles = () => [...document.querySelectorAll('#docForm [data-title]')].map((i) => i.value);
+function restoreDocTitles(vals) {
+  document.querySelectorAll('#docForm [data-title]').forEach((inp, i) => { if (vals[i] != null) inp.value = vals[i]; });
+}
+
 async function saveDoc(form) {
   const f = new FormData(form);
-  const file = pendingFile;
-  if (!file) return;
+  if (!pendingFiles.length) return;
+  const titles = readDocTitles();
+  const date = f.get('date') || todayKey();
+  const owner = ['shared', ...PROFILE_IDS].includes(f.get('owner')) ? f.get('owner') : 'shared';
+  const setMenu = !!f.get('setMenu') && owner !== 'shared' && pendingFiles.length === 1;
   const btn = form.querySelector('[type=submit]');
   if (btn) btn.disabled = true;
+  let saved = 0;
   try {
-    const rec = {
-      id: 'doc' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-      title: String(f.get('title') || '').trim().slice(0, 80) || file.name,
-      date: f.get('date') || todayKey(),
-      owner: ['shared', ...PROFILE_IDS].includes(f.get('owner')) ? f.get('owner') : 'shared',
-      name: file.name,
-      type: file.type || (/\.pdf$/i.test(file.name) ? 'application/pdf' : ''),
-      size: file.size,
-      added: Date.now(),
-      data: await file.arrayBuffer(),
-    };
-    await idbRun('readwrite', (s) => s.put(rec));
-    docs = [...(docs || []), rec];
-    if (f.get('setMenu') && rec.owner !== 'shared') { state.profiles[rec.owner].menuDoc = rec.id; save(); }
-    pendingFile = null;
+    // Save one by one; saved files leave the waiting list, so a retry never duplicates them
+    while (pendingFiles.length) {
+      const file = pendingFiles[0];
+      const rec = {
+        id: 'doc' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        title: String(titles[0] || '').trim().slice(0, 80) || file.name.replace(/\.[^.]+$/, '') || file.name,
+        date,
+        owner,
+        name: file.name,
+        type: file.type || (/\.pdf$/i.test(file.name) ? 'application/pdf' : ''),
+        size: file.size,
+        added: Date.now() + saved,
+        data: await file.arrayBuffer(),
+      };
+      await idbRun('readwrite', (st) => st.put(rec));
+      docs = [...(docs || []), rec];
+      if (setMenu) { state.profiles[owner].menuDoc = rec.id; save(); }
+      pendingFiles.shift();
+      titles.shift();
+      saved++;
+    }
     renderDocs();
-    toast('המסמך נשמר במכשיר ✓');
+    toast(saved > 1 ? `${saved} מסמכים נשמרו במכשיר ✓` : 'המסמך נשמר במכשיר ✓');
   } catch (e) {
-    if (btn) btn.disabled = false;
-    toast(e && e.name === 'QuotaExceededError' ? 'אין מספיק מקום במכשיר' : 'שגיאה בשמירת הקובץ');
+    renderDocs();
+    restoreDocTitles(titles);
+    const why = e && e.name === 'QuotaExceededError' ? 'אין מספיק מקום במכשיר' : 'שגיאה בשמירת הקובץ';
+    toast(saved ? `${saved} נשמרו, ${pendingFiles.length} לא – ${why}` : why);
   }
 }
 
@@ -1098,7 +1122,7 @@ function renderDocs() {
         <span class="doc-ic" aria-hidden="true">${isPdf(d) ? '📄' : '🖼️'}</span>
         <div class="grow">
           <b>${esc(d.title)}</b>
-          <div class="muted small">${fmtDate(d.date)}/${parseKey(d.date).getFullYear()} · ${fmtMB(d.size)}</div>
+          <div class="muted small">${fmtDate(d.date)}/${parseKey(d.date).getFullYear()} · <bdi>${fmtMB(d.size)}</bdi></div>
           ${cur.length ? `<div>${cur.map((pid) => `<span class="pill">⭐ התפריט הנוכחי${PROFILE_IDS.length > 1 ? ` של ${esc(state.profiles[pid].name)}` : ''}</span>`).join(' ')}</div>` : ''}
         </div>
       </div>
@@ -1116,29 +1140,34 @@ function renderDocs() {
   let html = `<div class="card">
     <h2>📁 מסמכים</h2>
     <p class="muted small" style="margin:0 0 10px">תפריטים מעודכנים ומסמכים אחרים (PDF או תמונה).</p>
-    <button class="btn block" data-act="doc-pick">➕ העלאת קובץ</button>
+    <button class="btn block" data-act="doc-pick">➕ העלאת קבצים</button>
+    <p class="muted small" style="margin:6px 0 0">אפשר לבחור כמה קבצים ביחד.</p>
     ${docsError ? '<p class="warn-line small">לא ניתן לשמור מסמכים בדפדפן הזה (ייתכן שזה מצב גלישה פרטית).</p>' : ''}
   </div>`;
 
-  if (pendingFile) {
-    const base = pendingFile.name.replace(/\.[^.]+$/, '');
+  if (pendingFiles.length) {
+    const many = pendingFiles.length > 1;
     html += `<form class="card" id="docForm" autocomplete="off">
-      <h2>פרטי המסמך</h2>
-      <p class="muted small" style="margin:0">${esc(pendingFile.name)} · ${fmtMB(pendingFile.size)}</p>
-      <label class="field"><span>כותרת</span><input type="text" name="title" value="${esc(base)}" maxlength="80" required></label>
+      <h2>${many ? `פרטי המסמכים <span class="muted small">· ${pendingFiles.length} קבצים</span>` : 'פרטי המסמך'}</h2>
+      ${pendingFiles.map((file, i) => `<div class="pend">
+        <label class="field" style="margin-top:${i ? 12 : 0}px"><span>${many ? `כותרת ${i + 1}` : 'כותרת'}</span><input type="text" data-title value="${esc(file.name.replace(/\.[^.]+$/, ''))}" maxlength="80" required></label>
+        <div class="pend-meta muted small"><span class="grow">${isPdf(file) ? '📄' : '🖼️'} <bdi>${esc(file.name.replace(/\.[^.]+$/, ''))}</bdi> · ${esc(extLabel(file))} · <bdi>${fmtMB(file.size)}</bdi></span>${many ? `<button type="button" class="del" data-pendrm="${i}" aria-label="הסרת ${esc(file.name)}">✕</button>` : ''}</div>
+      </div>`).join('')}
+      <button class="btn ghost block" type="button" data-act="doc-pick" style="margin-top:10px">➕ הוספת קבצים נוספים</button>
+      ${many ? '<h3>לכל הקבצים</h3>' : ''}
       <label class="field"><span>תאריך</span><input type="date" name="date" value="${today}" required></label>
       <label class="field"><span>שייך ל־</span>
         <select name="owner">${owners.map((o) => `<option value="${o}" ${o === state.active ? 'selected' : ''}>${esc(ownerName(o))}</option>`).join('')}</select></label>
-      <label class="chk"><input type="checkbox" name="setMenu"> לקבוע כתפריט הנוכחי (לא חל על ״משותף״)</label>
+      ${many ? '' : '<label class="chk"><input type="checkbox" name="setMenu"> לקבוע כתפריט הנוכחי (לא חל על ״משותף״)</label>'}
       <div class="btn-row">
-        <button class="btn" type="submit">שמירה</button>
+        <button class="btn" type="submit">${many ? `שמירת ${pendingFiles.length} קבצים` : 'שמירה'}</button>
         <button class="btn ghost" type="button" data-act="doc-cancel">ביטול</button>
       </div>
     </form>`;
   }
 
   const groups = owners.map((o) => ({ o, list: sorted.filter((d) => (owners.includes(d.owner) ? d.owner : 'shared') === o) })).filter((g) => g.list.length);
-  if (!groups.length && !pendingFile) {
+  if (!groups.length && !pendingFiles.length) {
     html += '<div class="card"><p class="muted" style="margin:0">עדיין אין מסמכים.</p></div>';
   }
   for (const g of groups) {
@@ -1445,7 +1474,7 @@ function restore() {
         }
         await loadDocs();
       }
-      overlay = null; setupDraft = null; pendingFile = null; tab = 'today'; viewDate = todayKey();
+      overlay = null; setupDraft = null; pendingFiles = []; tab = 'today'; viewDate = todayKey();
       render();
       if (!bdocs.length || restoredDocs) toast(restoredDocs ? `הנתונים ו־${restoredDocs} מסמכים שוחזרו ✓` : 'הנתונים שוחזרו ✓');
     } catch (e) {
@@ -1523,6 +1552,13 @@ document.addEventListener('click', (e) => {
     return;
   }
   if (t.dataset.doc) { docAction(t.dataset.doc, t.dataset.id); return; }
+  if (t.dataset.pendrm !== undefined) {
+    const typed = readDocTitles();
+    const i = +t.dataset.pendrm;
+    pendingFiles.splice(i, 1); typed.splice(i, 1);
+    renderDocs(); restoreDocTitles(typed);
+    return;
+  }
   if (t.dataset.shopdel) {
     state.shopping = state.shopping.filter((i) => i.id !== t.dataset.shopdel);
     save(); renderShop();
@@ -1537,7 +1573,7 @@ document.addEventListener('click', (e) => {
     case 'go-blood': weightSub = 'blood'; go('weight'); break;
     case 'open-mymenu': openDoc(docById(profile().menuDoc)); break;
     case 'doc-pick': pickDoc(); break;
-    case 'doc-cancel': pendingFile = null; renderDocs(); break;
+    case 'doc-cancel': pendingFiles = []; renderDocs(); break;
     case 'blood-next-clear': profile().bloodNext = null; save(); renderWeight(); break;
     case 'go-measure': { const c = $('#measureCard'); if (c) c.scrollIntoView({ behavior: 'smooth', block: 'start' }); break; }
     case 'water-undo': undoWater(); renderToday(); break;
